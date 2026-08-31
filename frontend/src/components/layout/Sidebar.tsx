@@ -117,6 +117,8 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           Montgomery County, MD
           <br />
           Department of Transportation
+          <br />
+          by Hein Htet
         </span>
       </div>
     </aside>

@@ -1,0 +1,28 @@
+domains:
+  vision_zero:
+    api_sources:
+      # Socrata resource IDs verified live against data.montgomerycountymd.gov (2026-08-30).
+      - id: crash_incidents
+        type: socrata
+        url: "https://data.montgomerycountymd.gov/resource/bhju-22kf.json"
+        refresh: weekly
+
+      - id: crash_drivers
+        type: socrata
+        url: "https://data.montgomerycountymd.gov/resource/mmzv-x632.json"
+        refresh: weekly
+
+      - id: crash_non_motorists
+        type: socrata
+        url: "https://data.montgomerycountymd.gov/resource/n7fk-dce5.json"
+        refresh: weekly
+
+    document_sources:
+      - id: vision_zero_reports
+        type: webpage
+        url: "https://www.montgomerycountymd.gov/visionzero/action-plan-reports-vision-zero"
+        allowed_domains:
+          - www.montgomerycountymd.gov
+          - assets.montgomerycountymd.gov
+        allowed_extensions:
+          - pdf

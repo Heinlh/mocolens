@@ -36,14 +36,16 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-# Vite's dev server default, plus whatever the deployed frontend origin is
-# (set FRONTEND_ORIGIN when that's known - see PROJECT_STATUS.txt's
-# deployment notes).
+# Vite's dev server default, plus every mocolens*.vercel.app origin (covers
+# both the production domain and Vercel's per-branch/per-PR preview URLs
+# without needing a new env var for each one), plus whatever's set in
+# FRONTEND_ORIGIN for anything else (a custom domain, say).
 _default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 _configured_origin = os.environ.get("FRONTEND_ORIGIN")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_default_origins + ([_configured_origin] if _configured_origin else []),
+    allow_origin_regex=r"https://mocolens.*\.vercel\.app",
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )

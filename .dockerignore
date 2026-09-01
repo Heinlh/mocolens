@@ -1,0 +1,8 @@
+data/raw
+data/processed
+frontend
+tests
+.git
+.env
+__pycache__
+*.pyc

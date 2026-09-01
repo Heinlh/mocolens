@@ -4,22 +4,30 @@ domains:
       # Socrata resource IDs verified live against data.montgomerycountymd.gov (2026-08-30).
       - id: crash_incidents
         type: socrata
+        title: "Crash Incidents Dataset"
+        description: "Police-reported crashes on Montgomery County roads, including severity, location, and conditions."
         url: "https://data.montgomerycountymd.gov/resource/bhju-22kf.json"
         refresh: weekly
 
       - id: crash_drivers
         type: socrata
+        title: "Drivers Dataset"
+        description: "Per-driver records for each crash: injury severity, fault, and vehicle details."
         url: "https://data.montgomerycountymd.gov/resource/mmzv-x632.json"
         refresh: weekly
 
       - id: crash_non_motorists
         type: socrata
+        title: "Non-Motorists Dataset"
+        description: "Pedestrians, cyclists, and other non-motorists involved in crashes, with injury severity."
         url: "https://data.montgomerycountymd.gov/resource/n7fk-dce5.json"
         refresh: weekly
 
     document_sources:
       - id: vision_zero_reports
         type: webpage
+        title: "Vision Zero Reports"
+        description: "County Vision Zero action plans, work plans, and annual progress reports."
         url: "https://www.montgomerycountymd.gov/visionzero/action-plan-reports-vision-zero"
         allowed_domains:
           - www.montgomerycountymd.gov

@@ -9,6 +9,12 @@ dependencies = [
     "docling>=2.0",
     "chromadb>=0.5",
     "sentence-transformers>=3.0",
+    "duckdb>=1.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "langgraph>=0.2",
+    "langchain-openai>=0.2",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

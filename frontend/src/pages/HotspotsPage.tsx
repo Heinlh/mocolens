@@ -10,6 +10,7 @@ import { mockReferenceLocations } from '@/data/mock/crashes'
 import { getHotspots } from '@/services/analyticsService'
 import { HOTSPOTS_SUGGESTED_PROMPTS } from '@/constants/prompts'
 import type { HotspotsResponse } from '@/types/analytics'
+import { formatDate } from '@/lib/format'
 
 const SUMMARY_ICONS = [MapPin, TrendingUp, Car]
 
@@ -49,7 +50,7 @@ export function HotspotsPage() {
               hotspots={data.hotspots}
               referenceLocations={mockReferenceLocations}
               height={440}
-              legendCaption={`Data from ${data.dataAsOf}`}
+              legendCaption={`Data from ${formatDate(data.dataAsOf)}`}
             />
           </Card>
 

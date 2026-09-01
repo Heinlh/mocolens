@@ -14,6 +14,7 @@ import { CrashHotspotMap } from '@/components/maps/CrashHotspotMap'
 import { mockReferenceLocations } from '@/data/mock/crashes'
 import { getDashboardOverview } from '@/services/analyticsService'
 import type { DashboardFilters, DashboardResponse } from '@/types/analytics'
+import { formatDate } from '@/lib/format'
 
 const METRIC_ICONS: LucideIcon[] = [Car, PersonStanding, Bike, ShieldAlert]
 const METRIC_TONES: Array<'accent' | 'danger' | 'neutral'> = ['accent', 'accent', 'accent', 'accent']
@@ -188,7 +189,7 @@ export function DashboardPage() {
         </div>
 
         {data.dataAsOf && (
-          <p className="text-xs text-text-muted">Updated from county datasets and public safety reports as of {data.dataAsOf}.</p>
+          <p className="text-xs text-text-muted">Updated from county datasets and public safety reports as of {formatDate(data.dataAsOf)}.</p>
         )}
       </div>
     </div>

@@ -1,0 +1,667 @@
+MOCOLENS - PROJECT STATUS
+Last updated: 2026-08-31 (evening)
+Full target architecture: MoCoLens_MVP_ARCHITECTURE.md (this file tracks build progress against it)
+
+==================================================
+WHAT HAS BEEN BUILT
+==================================================
+
+--------------------------------------------------
+1. BACKEND - EXTRACT LAYER (Python, src/mocolens/ingestion/)
+--------------------------------------------------
+Status: DONE and verified against real Montgomery County sources.
+
+Fetches raw API records and raw documents into the immutable data/raw/
+lake. Does not validate, normalize, or transform anything (that's the
+processing layer, below).
+
+Files:
+  config/sources.yaml                        - domain/source registry
+  src/mocolens/ingestion/api/base.py          - ApiFetcher interface
+  src/mocolens/ingestion/api/socrata.py       - Socrata paginated fetcher
+  src/mocolens/ingestion/documents/crawler.py    - seed-page link discovery
+  src/mocolens/ingestion/documents/downloader.py - download + change detection
+  src/mocolens/ingestion/documents/manifest.py   - manifest.jsonl read/write, hashing
+  src/mocolens/ingestion/runner.py            - orchestrates one domain's extract run
+  scripts/ingest.py                           - CLI: python scripts/ingest.py --domain vision_zero
+
+Verified live:
+  - 3 real Socrata dataset IDs confirmed against data.montgomerycountymd.gov:
+      crash_incidents      bhju-22kf
+      crash_drivers        mmzv-x632
+      crash_non_motorists  n7fk-dce5
+    Full run downloaded 351,912 real crash/driver/non-motorist records.
+  - Real Vision Zero reports seed page confirmed:
+      https://www.montgomerycountymd.gov/visionzero/action-plan-reports-vision-zero
+    Crawler correctly discovered links, filtered out an off-domain PDF
+    (arlingtonva.us) via the allowed_domains list, and downloaded 5 PDFs
+    into data/raw/documents/vision_zero/PDFs/ with a working manifest.
+
+Known limitation (by design of the stack, not a bug):
+  The crawler only sees static server-rendered HTML (httpx + BeautifulSoup,
+  per the architecture doc's stack choice - no headless browser). The
+  reports page's older/archived report links appear to load via
+  client-side JS and are invisible to this crawler. Only 5 of the ~30
+  PDFs listed on the page were discovered. Acceptable for the MVP's
+  "prove the pipeline works" goal; revisit with a headless-browser crawl
+  step if full historical report coverage becomes a real requirement.
+
+Tests: tests/ingestion/test_extract.py - manifest change-detection,
+manifest roundtrip, Socrata pagination (mocked transport). All passing.
+
+--------------------------------------------------
+2. BACKEND - PROCESSING LAYER (Python, src/mocolens/processing/, storage/)
+--------------------------------------------------
+Status: DONE and verified end to end, including a real semantic search
+against the finished index.
+
+Turns raw PDFs into searchable, cited chunks in Chroma. Chosen stack
+(a deliberate substitution for the architecture doc's originally-named
+PyMuPDF, approved by the user):
+
+  PDF parsing + chunking : Docling (IBM Research, MIT license)
+                           - HybridChunker, tokenizer-aware, keeps
+                             headers/footers/tables/page numbers intact
+  Embeddings              : ibm-granite/granite-embedding-30m-english
+                           (Apache 2.0, via sentence-transformers, CPU-only)
+  Vector DB               : Chroma, PersistentClient, local disk
+                           (data/curated/<domain>/chroma/)
+
+All three are free, local, no API keys, no paid tier - matches the
+architecture doc's "local development, low cost" principle exactly.
+
+Files:
+  src/mocolens/processing/pdf_parser.py  - Docling DocumentConverter wrapper
+  src/mocolens/processing/chunker.py     - HybridChunker + Granite tokenizer,
+                                            filename-based year heuristic
+  src/mocolens/processing/runner.py      - orchestrates parse->chunk->embed->
+                                            index for one domain, skips
+                                            already-processed PDFs unless --force
+  src/mocolens/storage/vector_store.py   - Chroma collection get/upsert/search
+  scripts/rebuild_vector_index.py        - CLI: python scripts/rebuild_vector_index.py --domain vision_zero
+
+Verified live: ran the real pipeline against all 5 downloaded Vision
+Zero PDFs. All 5 completed - parsed, chunked (319 chunks total),
+embedded, and written into the Chroma collection at
+data/curated/vision_zero/chroma/. Confirmed the index is actually
+searchable, not just files-on-disk: a real query ("pedestrian safety
+improvements") returned on-topic passages with correct page provenance
+(e.g. FY25 Vision Zero Annual Report, p.18).
+
+A first full run crashed partway through with no traceback (root cause
+below, since fixed) - this run is the corrected one, after the fix.
+
+Tests: tests/processing/test_chunker.py - the filename->year regex
+heuristic (the one branchy piece of logic that isn't just a library
+call). Caught and fixed a real regex bug during development (\b doesn't
+break between a digit and an underscore).
+
+--------------------------------------------------
+3. BACKEND - STRUCTURED TRANSFORM LAYER (Python, src/mocolens/processing/transforms/, storage/)
+--------------------------------------------------
+Status: DONE and verified against the real 351,912-record download, with
+every number cross-checked against manual counts of the raw data.
+
+Turns raw Socrata JSON into curated fact_crashes / fact_participants
+tables (§10, §11, §26). All normalization is SQL run through DuckDB
+itself (CREATE MACRO for the messy enum values, CREATE TABLE AS SELECT
+for the transform) - no pandas/polars dependency, and every step is a
+query you can run by hand to debug.
+
+Files:
+  src/mocolens/processing/quality.py            - QualityReport / run_check:
+                                                    "hard" checks raise,
+                                                    "soft" checks are logged
+  src/mocolens/processing/transforms/vision_zero.py - the actual normalization
+  src/mocolens/storage/duckdb_store.py           - connect/export_parquet/
+                                                    dim_date view
+  src/mocolens/processing/curate.py              - orchestrator, finds the
+                                                    latest raw snapshot,
+                                                    writes logs/curation/runs.jsonl
+  scripts/build_curated_tables.py                - CLI: python scripts/build_curated_tables.py --domain vision_zero
+
+Real-data quirks this was built to handle (found by inspecting the actual
+downloaded Socrata data, not assumed - see the file's module docstring):
+  - injury_severity / acrs_report_type / collision_type mix ALL-CAPS and
+    Title Case for the same value ("NO APPARENT INJURY" vs "No Apparent
+    Injury") - canonicalized via SQL macros.
+  - crash_incidents had one real exact-duplicate report_number - deduped
+    via ROW_NUMBER, counted as a quality violation, not silently kept.
+  - the real Socrata schema has no participant age or municipality field
+    at all, despite the architecture doc's suggested §11 model listing
+    them - not fabricated. dim_location was skipped entirely for the same
+    reason (nothing to populate it with yet); dim_date is a VIEW computed
+    from fact_crashes.crash_date, not a materialized table, so it can
+    never drift out of sync.
+  - out-of-bounds coordinates, missing injury_severity, and orphaned
+    participant rows (a driver/non-motorist row whose crash_id has no
+    matching incident) are all real in the data - nulled/flagged and
+    counted, never silently dropped or crashed on.
+  - an empty raw JSON snapshot (`[]`) makes DuckDB's schema inference
+    collapse to one untyped column - caught explicitly with a clear
+    error instead of the cryptic BinderException it produces otherwise.
+
+Quality checks, run live against the real data: 10 checks (3 hard, 7
+soft). All 3 hard checks passed. Soft checks surfaced real findings:
+1 duplicate crash row, 2 orphaned participants, 3,478 missing injury
+severities, 91 out-of-bounds coordinates, and - the most interesting one -
+31 crashes police classified as "Fatal Crash" with no participant record
+marked fatal (a cross-check between two independent severity signals in
+the source data, not a bug in this pipeline).
+
+Verified live, every number cross-checked against a manual pass over the
+raw JSON: fact_crashes = 124,769 rows (124,770 raw - 1 duplicate, exact
+match); severity breakdown property_damage/injury/fatal = 82,463/41,904/
+402 (fatal count unchanged by dedup, exact match); fact_participants =
+227,142 rows (219,644 drivers + 7,498 non-motorists, exact match);
+participant_type breakdown pedestrian/cyclist/other sums to exactly 7,498.
+Reran the full pipeline twice (idempotent - CREATE OR REPLACE, no
+duplication). Parquet exports independently re-read via a fresh
+read_parquet() call, not just checked for existing. dim_date view and a
+real analytical join (pedestrian crashes per year) both work.
+
+Tests: tests/processing/test_quality.py (the run_check primitive: pass/
+fail/hard-raise/threshold) and tests/processing/test_transforms_vision_zero.py
+(19 tests against a synthetic snapshot deliberately seeded with every
+real-data quirk above - case variants, the duplicate, null injury
+severity, out-of-bounds coords, an orphaned participant, an unparseable
+date, an unrecognized severity string, and the empty-array edge case).
+All 21 passing. Found and fixed two real bugs while writing these: DuckDB
+can't bind a prepared parameter inside CREATE VIEW (path is escaped and
+inlined instead), and a CTE referenced by a later quality-check query
+needed to be a materialized table instead (scope issue, not a logic bug).
+
+--------------------------------------------------
+4. RETRIEVAL TOOLS (Python, src/mocolens/retrieval/)
+--------------------------------------------------
+Status: DONE. All 5 tools from architecture doc §14 built and tested (91
+tests). These are library functions today, not wired to an LLM yet - the
+agent (Phase 4) calls them once it exists.
+
+Files:
+  src/mocolens/retrieval/sql_tool.py           - query_analytics (§14.1)
+  src/mocolens/retrieval/report_tool.py        - search_reports (§14.2)
+  src/mocolens/retrieval/metadata_tool.py      - get_source_metadata (§14.3)
+  src/mocolens/retrieval/statistics_tool.py    - calculate_statistics (§14.4)
+  src/mocolens/retrieval/visualization_tool.py - build_visualization_spec (§14.5)
+
+query_analytics is the one worth real attention - it runs SQL an LLM will
+eventually write. Every layer below was verified empirically against a
+running DuckDB instance, not assumed safe from documentation:
+  1. The query never touches the real analytics.duckdb file. A fresh
+     in-memory connection loads ONLY the allow-listed tables straight
+     from their Parquet exports - no ATTACH at all. Confirmed empirically
+     that ATTACH ... READ_ONLY + exposing one view is NOT sufficient on
+     its own: a schema-qualified name (src.other_table) still reaches
+     every table in the attached database regardless of which views
+     exist. This would have shipped as a real hole if not tested.
+  2. `SET enable_external_access = false` after loading the trusted
+     tables - disables read_parquet/read_csv/COPY/ATTACH from inside the
+     query text entirely, and DuckDB refuses to let a later statement
+     turn it back on. Without this, a crafted query could read (or COPY
+     out) any file on disk the process can see, regardless of which
+     tables were "loaded" - also confirmed empirically, also would have
+     shipped as a real hole.
+  3. Query text is parsed with DuckDB's own parser (extract_statements),
+     not regex - exactly one statement, type must be SELECT. A textual
+     backstop additionally rejects pragma/attach/copy/etc. as whole
+     words, because at least one informational PRAGMA parses as
+     StatementType.SELECT - confirmed empirically. (An earlier version of
+     this backstop used substring matching and would have rejected any
+     legitimate query using SQL's OFFSET clause, because "offset"
+     contains "set" - caught by testing, fixed with word-boundary regex.)
+  4. Always wrapped in SELECT * FROM (...) LIMIT n regardless of what the
+     inner query does.
+  5. A watchdog thread calls connection.interrupt() after a timeout -
+     confirmed this actually aborts a running query.
+  Every call is also logged to logs/retrieval/sql_queries.jsonl (question,
+  sql, reason, row_count or error) for audit.
+
+Tests: tests/retrieval/ - 91 tests across all 5 tools. sql_tool's 26
+include a full adversarial battery (multi-statement, DROP/INSERT/UPDATE/
+DELETE/CREATE/ALTER, ATTACH, PRAGMA, COPY, a read_csv_auto filesystem
+escape attempt, an unknown-table reference, a slow-query timeout) plus
+regression tests for both real bugs found while building this (the OFFSET
+false-positive above, and DuckDB's CREATE VIEW not accepting a prepared
+parameter). metadata_tool and report_tool each include one live test
+against the real ingested data/index (skipped gracefully if that data
+hasn't been built yet, so the suite still passes in a fresh checkout).
+
+--------------------------------------------------
+5. API LAYER (Python, src/mocolens/api/)
+--------------------------------------------------
+Status: DONE for two endpoints - GET /api/dashboard/summary (the first
+vertical slice: DuckDB -> FastAPI -> real network call -> React dashboard)
+and POST /api/query (FastAPI -> the LangGraph agent -> React Ask flow),
+both proven end-to-end with real browser screenshots, not just curl. The
+rest of §21's endpoint list is not built yet (see WHAT IS PLANNED).
+
+Files:
+  src/mocolens/api/schemas.py           - Pydantic response models mirroring
+                                           frontend/src/types/analytics.ts
+                                           AND query.ts/sources.ts
+                                           field-for-field (alias_generator
+                                           handles snake_case -> camelCase,
+                                           so the JSON needs zero reshaping
+                                           on the frontend side)
+  src/mocolens/api/dashboard_service.py - the real SQL/stats behind
+                                           GET /api/dashboard/summary
+                                           (queries DuckDB directly, not
+                                           through sql_tool's sandbox -
+                                           that sandbox exists to contain
+                                           LLM-authored SQL, and this is our
+                                           own trusted code, so the isolation
+                                           would be pure overhead here)
+  src/mocolens/api/query_service.py     - reshapes the agent's AgentAnswer
+                                           (agent/schemas.py) into
+                                           QueryResponse: assigns citation
+                                           ids, maps caveats -> limitations,
+                                           and pulls any build_visualization_spec
+                                           results out of the agent's message
+                                           history into `visualizations`
+  src/mocolens/api/main.py              - FastAPI app, CORS, /api/health,
+                                           /api/dashboard/summary,
+                                           /api/query (RuntimeError from a
+                                           missing-credentials agent ->
+                                           503; any other agent failure ->
+                                           generic 500, logged server-side,
+                                           never leaking internals like SQL
+                                           text or a stack trace to the client)
+
+Run it: `python -m uvicorn mocolens.api.main:app --port 8001` (backend)
+and `cd frontend && npm run dev` (frontend, reads VITE_API_BASE_URL from
+frontend/.env - copy frontend/.env.example to get it pointed at 8001).
+frontend/src/services/analyticsService.ts calls the real endpoint when
+that variable is set and falls back to mock data if the backend is
+unreachable, so the frontend still runs standalone with nothing running.
+
+A real, non-cosmetic bug was found and fixed while wiring this up:
+agency_name - the closest real "area" proxy fact_crashes has - turned out
+to have the SAME messy-casing problem as injury_severity/acrs_report_type,
+but worse: each of the 5 real reporting agencies appears under TWO
+different raw strings (e.g. "MONTGOMERY" and "Montgomery County Police";
+"Rockville Police Departme" is truncated mid-word by what looks like a
+Socrata field-length limit). A naive GROUP BY agency_name was silently
+splitting every real agency into two "different" hotspot areas on the
+dashboard map - only caught by actually looking at the rendered
+screenshot, not by any automated check. Fixed at the curation layer (a
+new normalize_agency() SQL macro in transforms/vision_zero.py, the same
+pattern as the other normalize_* macros) so every consumer benefits, not
+just this one endpoint - plus a new soft quality check
+(unrecognized_agency_name) so a future 6th agency shows up as a flagged
+anomaly instead of silently passing through unmapped. 2 new regression
+tests added; curated tables rebuilt and reverified.
+
+Also fixed while building this: an early version of the dashboard's
+"insights" text compared the crash-trend chart's first and last months
+directly and reported "crashes have risen 320%" - which was entirely a
+partial-month edge-boundary artifact of a fixed 13-month trailing window,
+not a real trend (§27's "avoid false precision" territory). Fixed by
+reusing the already-robust trailing-12mo-vs-prior-12mo comparison that's
+computed for the "Total crashes" KPI card instead of the fragile
+month-endpoint comparison.
+
+Verified live: real curl/TestClient/pytest checks against the actual
+curated database (10 tests in tests/api/), a running `uvicorn` process
+hit with real curl requests (not just TestClient), and a full round-trip
+through the actual React dev server - headless-Chromium screenshot of
+/dashboard showing real numbers (10,250 total crashes, real severity/
+road-user breakdowns, 5 correctly-named agency hotspots on the map, a
+plain-language "Aug 31, 2026" freshness date, zero console errors).
+
+Known, honest limitation carried over from section 3: agency_name (police
+jurisdiction) is a coarser "area" signal than the city-level "Silver
+Spring vs. Bethesda" framing the original mock/screenshots implied -
+Montgomery County Police covers most of the county including
+unincorporated areas, so it dominates the other 4 (city-specific)
+departments. This is what the real data actually supports; no finer
+geography was fabricated to match the mock more closely.
+
+POST /api/query, added after the agent (section 6): frontend's
+QueryResponse has metrics/crashTrend/hotspots fields tied to the old
+mock's one fixed KPI+chart+map layout - the agent's evidence varies per
+question (whatever SQL/search it actually decided to run), so there's no
+single generic mapping from "arbitrary query_analytics rows" to those
+typed shapes yet. Left them as empty lists rather than half-build a
+generic mapper - documented directly in api/schemas.py, not silently
+dropped. What IS populated: the real narrative (answer/summary/
+whatDataMeans/countyReportPoints/caveats), real validated citations, real
+follow-up prompts, and real visualizations pulled from any
+build_visualization_spec tool calls the agent actually made.
+
+Because those fields are usually empty today, AgentAnswer.tsx (the
+frontend component, not the backend) got 3 small conditional-render
+guards added: the KPI row, the trend-chart/hotspot-map row, and the
+"what county reports say" card now only render when they have real data,
+instead of showing an empty KPI grid or - the concrete bug this caught -
+MiniHotspotMap's fitToLocalBounds() calling Math.min(...[]) on an empty
+hotspots array, which evaluates to Infinity and would have rendered
+NaN-coordinate circles. Found by reading the component's math before
+shipping, not by seeing it break.
+
+Verified live: 13 new tests in tests/api/test_query.py (the agent itself
+is mocked throughout - these test the reshaping and HTTP layer, not the
+LLM, so the suite doesn't need real Azure credentials or cost real tokens
+on every run) covering the visualization-extraction and citation-id
+mapping logic plus all 3 HTTP status paths (200, 400 empty question, 503
+missing credentials, 500 generic-with-no-leaked-internals). Then a full
+real round trip: both servers running for real, a real browser filling in
+the actual prompt composer and clicking submit (not a direct API call),
+waiting on the real agent's real latency, landing on a real rendered
+answer - "In 2025, Montgomery County experienced 447 crashes involving
+pedestrians..." with correct caveats and zero console errors. One
+harness bug caught along the way: the first screenshot driver waited for
+literal text "Sources" to appear, which false-matched instantly against
+the sidebar's permanent "Sources" nav link rather than the answer
+section's heading - fixed by scoping to the h3 element specifically.
+
+--------------------------------------------------
+6. AGENT (Python, src/mocolens/agent/) - LangGraph + Azure OpenAI
+--------------------------------------------------
+Status: DONE, control-flow verified against a fake scriptable LLM AND
+verified live against the real model with 2 real questions. Both correct:
+a structured-only question returned 447 pedestrian crashes for 2025,
+matching (exactly) the count independently verified by hand earlier in
+section 3's work; the primary hybrid demo question from §31 correctly
+combined SQL + 3 real report citations (real titles, pages, URLs - none
+hallucinated, none stripped incorrectly) AND correctly admitted it has no
+Silver-Spring-specific crash data (only county-wide agency_name exists -
+the same known limitation from section 5) rather than fabricating a
+number - grounding worked exactly as designed, live, unprompted.
+
+LLM: Azure OpenAI, gpt-4.1-mini, via langchain-openai's AzureChatOpenAI.
+Went through two provider changes to get here, each for a real reason,
+not indecision:
+  1. IBM watsonx.ai (ibm/granite-4-h-small) - the user's original choice,
+     continuing the IBM stack from the processing layer. Built and
+     integration-verified (schemas, field names, all confirmed against
+     the installed package), but blocked on IBM Cloud account
+     configuration that took most of a session to diagnose: an invalid
+     API key (traced to a mis-copied value, not a code bug), then a
+     watsonx.ai project with no Watson Machine Learning instance
+     associated, then account-level Lite-plan quota conflicts from
+     leftover auto-created WML instances. None of this was a code
+     problem - every failure was confirmed as a clean, specific error
+     from IBM's own services (auth rejection, then a clear
+     no_associated_service_instance_error), not a crash or a guess.
+  2. Azure AI Foundry with a Granite model - considered next, but
+     checked Microsoft's own current (dated 2026-07-16) Foundry "Featured
+     models" catalog before writing any code: IBM/Granite is not a
+     first-party serverless model there. The only Granite-on-Azure path
+     is self-hosted managed compute (a continuously-billed GPU VM),
+     which is a bigger commitment than the watsonx account issue being
+     worked through, not a simpler alternative to it.
+  3. GitHub Models was considered as a free, zero-infrastructure
+     alternative - checked GitHub's own current docs before recommending
+     it and found it was fully retired on 2026-07-30, a month before this
+     session. (Several independent "free LLM API" listicle sites still
+     described it as live and current - a reminder that those aggregator
+     sites lag reality and aren't a substitute for checking the primary
+     source.)
+  4. Landed on Azure OpenAI gpt-4.1-mini (gpt-4o-mini's replacement,
+     since deprecated), funded by the user's Azure for Students credit -
+     genuinely available today, tool-calling reliability is the most
+     battle-tested of any option considered, and langchain-openai's
+     AzureChatOpenAI integration worked correctly on the first real
+     attempt once credentials were in place - no equivalent friction to
+     watsonx's account-configuration maze.
+Docling and the Granite embedding model (section 2) are completely
+unaffected by any of this - they're separate, local, already-working
+components with zero dependency on which chat LLM the agent calls. Only
+the agent's LLM changed; the "IBM stack" everywhere else did not.
+
+Credential handling: the user pasted a real Azure API key directly into
+chat and explicitly authorized handling/testing with it directly ("no
+money is at stake"). It was written straight to .env (gitignored) and
+never echoed back in any response, command output, log, or test - every
+diagnostic command used to verify credentials print only lengths/whitespace
+flags, never the value itself. Same defensive pattern the watsonx
+credentials got: .strip() on both AZURE_OPENAI_API_KEY and
+AZURE_OPENAI_ENDPOINT before use, plus a regression test for it, since a
+stray space around a pasted secret was an actual bug hit earlier in this
+session while debugging watsonx auth failures, not a hypothetical.
+
+Files:
+  src/mocolens/agent/tools.py    - LangChain @tool wrappers around all 5
+                                    retrieval/*.py tools. calculate_statistics'
+                                    one Python dispatch function became 6
+                                    separate narrow tools here (percent_change,
+                                    rate_per, average, median, rank_items,
+                                    year_over_year) - LLM tool-calling wants
+                                    typed single-purpose schemas, not a
+                                    kwargs dispatcher (§33.7). Verified all
+                                    10 tool schemas actually generate valid
+                                    LLM function-calling JSON, not just that
+                                    they import.
+  src/mocolens/agent/llm.py      - AzureChatOpenAI factory; raises a clear
+                                    RuntimeError naming exactly which env
+                                    var(s) are missing, not a generic failure
+  src/mocolens/agent/prompts.py  - system prompt (grounding rules, no
+                                    causation claims, plain English per §19)
+                                    + finalize instructions
+  src/mocolens/agent/schemas.py  - AgentAnswer (Pydantic, the LLM's
+                                    structured final output) - shaped to
+                                    match frontend/src/types/query.ts's
+                                    QueryResponse's narrative fields exactly,
+                                    same alignment approach as api/schemas.py
+  src/mocolens/agent/graph.py    - the StateGraph: agent <-> tools loop,
+                                    bounded to 3 cycles (§17), then finalize
+                                    -> validate_citations -> END
+  scripts/ask.py                 - CLI: python scripts/ask.py "<question>"
+
+Graph shape:
+    START -> agent --(tool calls requested)--> tools --(cycles left)--> agent (loop)
+                  \\--(no tool calls)--> finalize              \\--(3 cycles used)--> finalize
+                                                                                          |
+                                                                                          v
+                                                                             validate_citations -> END
+
+validate_citations is deterministic Python, not another LLM call: it
+strips any citation the model produced that doesn't correspond to an
+actual search_reports/get_source_metadata result seen earlier in that
+same run (matched by title or URL) - so a hallucinated source can never
+reach the user, and if no report/metadata tool ever ran, every citation
+is stripped regardless of what the model claims (§27, §33.10).
+
+A real design bug was caught while writing the cycle-limit test, not
+assumed correct: the first version checked the cycle cap inside the
+"agent" node's routing function, which meant after the 3rd tool execution
+the agent got called a 4th time to "plan again," and that 4th call's
+tool-call decision was silently discarded once cycle_count already hit
+the cap - a wasted LLM call on every maxed-out conversation, real cost on
+a paid API for nothing. Fixed by moving the cap check to right after tool
+execution (route_after_tools) instead of after the next agent call
+(route_after_agent) - confirmed via a test asserting the exact LLM
+invocation count, which caught the off-by-one before it could ship.
+
+Tests: tests/agent/test_graph.py (9 tests) use a hand-written scriptable
+fake chat model (implements .bind_tools()/.with_structured_output()/
+.invoke() - the same interface any LangChain chat model exposes) instead
+of a real API call, so these run without credentials, cost nothing, and
+are deterministic. Cover: no-tools-needed short-circuit, single tool
+cycle then finalize, the cycle-limit fix above (asserted via exact LLM
+invocation count), finalize actually receiving tool results in its
+message history (not just the original question), and 5 citation-
+validation cases (a real citation kept, a hallucinated one stripped, all
+citations stripped when no search ever ran, title-differs-but-url-matches
+still counts as real, a non-list tool result like query_analytics'
+dict output doesn't crash the matcher). tests/agent/test_llm.py (4 tests)
+covers missing/partial/whitespace-only credentials and that surrounding
+whitespace gets stripped before use. All 13 passing, plus the 2 real live
+runs described at the top of this section - the fake-LLM tests prove the
+graph's control flow is correct; the live runs are what actually prove
+gpt-4.1-mini picks the right tools and produces a schema-valid, grounded
+answer for a real question, which no amount of fake-LLM testing can prove
+on its own.
+
+--------------------------------------------------
+7. FRONTEND (React + TypeScript + Vite + Tailwind, frontend/)
+--------------------------------------------------
+Status: DONE. All six screens still fully usable standalone on mock data;
+the Dashboard Overview screen AND the Ask flow now also have a real
+backend behind them (see section 5) via the same service-layer boundary
+the frontend was designed around from the start - no page component
+changed to wire either one up, only the two service files (analyticsService.ts,
+queryService.ts) plus 3 small conditional-render guards in AgentAnswer.tsx
+for fields the agent doesn't populate yet (see section 5's POST /api/query
+writeup). getHotspots() (the separate Hotspots page) and sourceService.ts
+still resolve mock data.
+
+Six screens, all sharing one AppShell/Sidebar/design system:
+  /                                              Ask home (prompt composer, suggested prompts)
+  /ask/result                                    Agent answer (KPI cards, trend chart, mini map,
+                                                  plain-language explanation, sources, follow-ups)
+  /dashboard                                     Traffic Safety Overview (4 KPI cards, filters,
+                                                  trend/severity/donut charts, hotspot map, insights)
+  /dashboard/hotspots                            Crash Hotspots (large map, ranked area list,
+                                                  "how to read this map", county focus areas)
+  /sources                                       Sources & Methodology (dataset cards, 4-step
+                                                  "how MoCoLens answers", citation table, caveats)
+  /saved-insights/silver-spring-pedestrian-safety Saved Insight (share/download/follow-up actions,
+                                                  trend + corridor charts, findings, next questions)
+
+Architecture (backend-integration boundary, per spec):
+  data/mock/*        - all sample values live here, one comment block
+                        marking them explicitly as unverified prototype
+                        data, never real county statistics
+  services/*         - queryService.ask(), analyticsService.getOverview(),
+                        sourceService.getSources() etc. resolve mock data
+                        today; swapping to fetch("/api/...") later touches
+                        only these files, never a page component
+  types/*            - Citation, Metric, QueryResponse, DashboardResponse,
+                        Hotspot, etc. - shaped to match the FastAPI response
+                        contracts already defined in the architecture doc
+
+Design tokens (Tailwind theme + CSS variables): black/charcoal/gold
+palette matching the supplied screenshots (--color-bg, --color-surface,
+--color-accent, --color-danger, --color-positive, etc.)
+
+Verified: `tsc -b` clean, `npm run build` succeeds, `npm run lint`
+(oxlint) clean. Launched the real dev server, drove all 6 routes with
+headless Chromium, screenshotted each - zero console errors, zero page
+errors. Visually compared every screenshot against the supplied
+reference images.
+
+frontend/.env.example now documents VITE_API_BASE_URL (see section 5).
+getHotspots() is still 100% mock - only the Dashboard Overview screen has
+a real endpoint behind it so far, not the separate Hotspots page.
+
+Not yet done: no deployment has been set up (discussed - Vercel
+recommended - not yet executed); repo is not yet a git repository, so
+nothing has been pushed anywhere.
+
+==================================================
+WHAT IS PLANNED 
+==================================================
+(Phases below follow MoCoLens_MVP_ARCHITECTURE.md section 30.)
+
+Phase 3 - Retrieval tools: DONE. See section 4 above.
+
+Phase 4 - Agentic workflow: DONE, control-flow-tested AND live-verified
+  with real questions against gpt-4.1-mini. See section 6 above. Still
+  open: the frontend's "AgentAnswer" screen is still 100% mocked (that's
+  POST /api/query, Phase 5 below - the agent exists now, the route to
+  reach it from the frontend doesn't yet).
+
+Phase 5 - Public API + real frontend wiring: MOSTLY DONE.
+  - GET /api/dashboard/summary, POST /api/query, and GET /api/health all
+    exist and are wired to the real frontend (section 5 above), each
+    proven with a live browser screenshot, not just curl. Still missing
+    from §21's list: GET /api/dashboard/trends, GET /api/dashboard/map,
+    GET /api/sources (a thin wrapper around retrieval/metadata_tool.py -
+    not built yet, but the tool behind it already is).
+  - Frontend service layer: analyticsService.getDashboardOverview() and
+    queryService.ask() both call the real backend when configured
+    (sections 5/7). getHotspots() and sourceService.ts still resolve mock
+    data - sourceService is waiting on GET /api/sources above.
+
+Phase 6 - Automated refresh (not started)
+  - Scheduled ingestion (GitHub Actions or equivalent), change-detection
+    driven re-processing, incremental (not full-rebuild) vector index
+    updates, smoke tests after each refresh. Per the user's own stated
+    ordering, this comes after the agent and after POST /api/query is
+    wired up, not before - it turns a working MVP into a maintained one,
+    it isn't part of proving the MVP works.
+
+Also not yet built, called out explicitly in the architecture doc:
+  - dim_location - deliberately skipped, not just deferred: the real
+    Socrata data has no municipality/community field to populate it
+    with. Revisit only if a real join-heavy need shows up (see section 3).
+  - Structured JSONL observability logs beyond what already exists:
+    logs/ingestion/runs.jsonl, logs/curation/runs.jsonl,
+    logs/ingestion/processing_failures.jsonl, and
+    logs/retrieval/sql_queries.jsonl (an audit log of every query_analytics
+    call, §14.1's "validated before execution" made inspectable after
+    the fact too)
+  - No evaluation harness yet (the user's own stated ordering also puts
+    this last, after the agent exists to evaluate)
+  - Deployment of anything - frontend (Vercel recommended) or backend
+    (needs persistent disk for DuckDB + Chroma, so Render/Railway/Fly.io
+    or a small VPS, NOT serverless functions)
+
+==================================================
+RESOLVED ISSUES
+==================================================
+1. [RESOLVED 2026-08-31] Processing pipeline crash (exit code 4, no
+   traceback) partway through a full run. Root cause confirmed:
+   RapidOCR was reloading its detect/cls/rec ONNX models and running
+   full-page OCR on every page of every PDF, even though these county
+   reports are text-native and OCR always returned an empty result -
+   pure wasted CPU/memory that compounded across a multi-document run
+   until something got killed. Fix, two parts:
+     - src/mocolens/processing/pdf_parser.py now builds the
+       DocumentConverter with do_ocr=False (table-structure detection
+       stays on - it's cheap and these reports have real tables).
+     - src/mocolens/processing/runner.py now runs each document in its
+       own subprocess (`python -m mocolens.processing.runner <domain>
+       <doc_id>`), so memory is fully reclaimed between documents, one
+       bad PDF can only fail itself, and a real traceback lands in
+       logs/ingestion/processing_failures.jsonl instead of vanishing.
+   Reran the full pipeline after the fix: all 5 documents processed,
+   0 failures, 319 chunks total, confirmed searchable (see above).
+
+2. [RESOLVED 2026-08-31] agency_name double-counting every real police
+   agency into two "different" areas (raw all-caps abbreviation vs. a
+   separately-truncated title-case name). See section 5's writeup - fixed
+   with a normalize_agency() macro at the curation layer, a new quality
+   check, 2 regression tests, and a rebuild + rescreenshot to confirm.
+
+3. [RESOLVED 2026-08-31] A dashboard "insight" reporting a fabricated 320%
+   crash increase, driven entirely by comparing two partial months at the
+   edges of a fixed trailing window. See section 5 - fixed by reusing the
+   already-correct trailing-12mo-vs-prior-12mo KPI figure instead.
+
+==================================================
+OPEN ISSUES
+==================================================
+1. Document coverage gap noted above (5 of ~30 linked reports discovered
+   - static-HTML crawler limitation, not a bug).
+2. Repo has no git history yet (no `git init` has been run).
+
+==================================================
+WHERE THINGS LIVE
+==================================================
+config/sources.yaml           domain + source registry (API + document sources)
+data/raw/                     immutable downloaded API JSON + PDFs + manifest
+data/processed/                parsed markdown + chunk JSONL per document
+data/curated/                 Chroma persistent vector store AND DuckDB
+                               analytics.duckdb + fact_*.parquet, per domain
+logs/ingestion/runs.jsonl     one line per extract-layer source run
+logs/curation/runs.jsonl      one line per structured-transform run
+logs/retrieval/sql_queries.jsonl  audit log of every query_analytics call
+src/mocolens/ingestion/       extract layer (done)
+src/mocolens/processing/      PDF/vector processing (done) +
+                               transforms/ structured ETL (done)
+src/mocolens/storage/         Chroma vector_store + DuckDB duckdb_store (done)
+src/mocolens/retrieval/       5 agent tools (done) - now called by the agent
+src/mocolens/api/             FastAPI app - 3 of ~6 planned endpoints (done):
+                               /api/health, /api/dashboard/summary, /api/query
+src/mocolens/agent/           LangGraph agent + Azure OpenAI gpt-4.1-mini
+                               (done, live-verified with real questions)
+frontend/                     6-screen React app (done) - Dashboard Overview
+                               AND the Ask flow backed by real data, the
+                               Hotspots page and Sources page still mock
+.env.example                  AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT
+tests/                         157 tests total across the whole backend
+                               as of this update (tests/api/test_query.py
+                               is the newest)

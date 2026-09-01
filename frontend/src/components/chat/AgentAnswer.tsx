@@ -31,29 +31,37 @@ export function AgentAnswer({ response, onFollowUpClick }: AgentAnswerProps) {
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          {response.metrics.map((metric, index) => (
-            <MetricCard key={metric.label} metric={metric} icon={METRIC_ICONS[index]} tone={METRIC_TONES[index]} />
-          ))}
-        </div>
+        {response.metrics.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-3">
+            {response.metrics.map((metric, index) => (
+              <MetricCard key={metric.label} metric={metric} icon={METRIC_ICONS[index]} tone={METRIC_TONES[index]} />
+            ))}
+          </div>
+        )}
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card>
-          <h3 className="text-sm font-semibold text-text-muted">Pedestrian crashes over time</h3>
-          <div className="mt-2">
-            <CrashTrendChart data={response.crashTrend} description={response.summary} />
-          </div>
-        </Card>
-        <Card>
-          <h3 className="text-sm font-semibold text-text-muted">Where crashes are concentrated</h3>
-          <div className="mt-2">
-            <MiniHotspotMap hotspots={response.hotspots} centerLabel="Silver Spring" />
-          </div>
-        </Card>
-      </div>
+      {(response.crashTrend.length > 0 || response.hotspots.length > 0) && (
+        <div className="grid gap-5 lg:grid-cols-2">
+          {response.crashTrend.length > 0 && (
+            <Card>
+              <h3 className="text-sm font-semibold text-text-muted">Pedestrian crashes over time</h3>
+              <div className="mt-2">
+                <CrashTrendChart data={response.crashTrend} description={response.summary} />
+              </div>
+            </Card>
+          )}
+          {response.hotspots.length > 0 && (
+            <Card>
+              <h3 className="text-sm font-semibold text-text-muted">Where crashes are concentrated</h3>
+              <div className="mt-2">
+                <MiniHotspotMap hotspots={response.hotspots} centerLabel="Silver Spring" />
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className={`grid gap-5 ${response.countyReportPoints.length > 0 ? 'lg:grid-cols-2' : ''}`}>
         <Card className="flex flex-col gap-2">
           <div className="flex items-center gap-2 text-text-muted">
             <Users2 className="h-4 w-4" aria-hidden="true" />
@@ -61,20 +69,22 @@ export function AgentAnswer({ response, onFollowUpClick }: AgentAnswerProps) {
           </div>
           <p className="text-sm text-text-muted">{response.whatDataMeans}</p>
         </Card>
-        <Card className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-text-muted">
-            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-            <h3 className="text-sm font-semibold">What county reports say</h3>
-          </div>
-          <ul className="flex flex-col gap-1.5 text-sm text-text-muted">
-            {response.countyReportPoints.map((point) => (
-              <li key={point} className="flex gap-2">
-                <span aria-hidden="true">•</span>
-                {point}
-              </li>
-            ))}
-          </ul>
-        </Card>
+        {response.countyReportPoints.length > 0 && (
+          <Card className="flex flex-col gap-2">
+            <div className="flex items-center gap-2 text-text-muted">
+              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              <h3 className="text-sm font-semibold">What county reports say</h3>
+            </div>
+            <ul className="flex flex-col gap-1.5 text-sm text-text-muted">
+              {response.countyReportPoints.map((point) => (
+                <li key={point} className="flex gap-2">
+                  <span aria-hidden="true">•</span>
+                  {point}
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
       </div>
 
       {response.limitations && response.limitations.length > 0 && (

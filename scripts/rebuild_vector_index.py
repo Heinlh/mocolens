@@ -24,8 +24,11 @@ def main() -> None:
     print(f"[{args.domain}]")
     print(f"Documents processed: {stats['documents_processed']}")
     print(f"Documents skipped (already chunked): {stats['documents_skipped']}")
+    print(f"Documents failed: {stats['documents_failed']}")
     print(f"Chunks embedded: {stats['chunks_created']}")
-    print("Status: SUCCESS")
+    if stats["documents_failed"]:
+        print("See logs/ingestion/processing_failures.jsonl for tracebacks.")
+    print("Status:", "PARTIAL FAILURE" if stats["documents_failed"] else "SUCCESS")
 
 
 if __name__ == "__main__":

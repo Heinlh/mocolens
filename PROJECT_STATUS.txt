@@ -355,6 +355,66 @@ literal text "Sources" to appear, which false-matched instantly against
 the sidebar's permanent "Sources" nav link rather than the answer
 section's heading - fixed by scoping to the h3 element specifically.
 
+Dashboard filters (time range, area, road user, severity) are now real
+query params, not client-side decoration - a usability pass (see the
+prior entry in this file) had found that 3 of the 4 dropdowns silently
+did nothing. Fixed in dashboard_service.py: a Filters dataclass, a Window
+resolver (stdlib calendar/date math, no new dependency) that turns
+"Last 6 months" / "Year to date" / "All time" / "Last 12 months" into a
+current-period and comparison-period date range, and a filter-clause
+builder that applies area/road_user/severity as real SQL predicates
+across every chart and KPI - all 4 combine with AND. One deliberate
+exception, not an oversight: hotspots never applies the area filter to
+itself, because the frontend's Area dropdown options are populated from
+that same response's hotspot list - if hotspots came back pre-narrowed
+to the selected area, every other area would vanish from the dropdown
+the instant one was picked. Area still genuinely filters every other
+chart and KPI; only the hotspots breakdown stays area-complete.
+
+Rate limiting (slowapi, in-memory - no Redis needed at this scale, one
+process): POST /api/query capped at 10/minute (it calls a real, billed
+LLM and runs 10-40s, so it's both the most expensive to abuse and the
+easiest to accidentally hammer by refreshing while "Thinking..." sits on
+screen); GET /api/dashboard/summary at 60/minute (cheap local DuckDB
+queries - exists to stop scripted abuse, not to constrain someone
+clicking through filters).
+
+A real gap this also closed, not just rate limiting for its own sake:
+both frontend services previously caught *any* fetch failure - network
+error, 500, 503, and now a 429 - identically, and silently substituted
+mock data for all of them. That's fine for "backend not configured"
+(the standalone-demo case) but was quietly wrong for "backend reachable
+but explicitly rejected the request": a rate-limited user would have
+seen fabricated mock data with no indication anything was wrong, and any
+future 500 or 503 would have looked identical - the exact failure mode
+that would make the chat look like it "isn't returning real answers"
+whenever anything real went wrong. Fixed with a shared
+frontend/src/lib/backendFetch.ts: a network-level failure (unreachable
+backend) still falls back to mock; a reachable-but-rejected response
+throws BackendError instead, which analyticsService/queryService now let
+propagate rather than swallow. AskResultPage.tsx and DashboardPage.tsx
+both got a real error-state UI for this - previously AskResultPage had
+*no* error handling at all (a rejected promise just hung forever on
+"Thinking..." with an unhandled rejection in the console; found while
+building this, not something introduced by it).
+
+Verified live, twice: first attempt showed identical KPI numbers across
+every filter change in the browser, which looked like the feature didn't
+work - turned out to be a bug in the *test script* (fixed-timeout races,
+likely worsened by Vite's dev-server file watcher reacting to new .mjs
+test files being created inside frontend/), not the app: direct curl
+against the running server, and a Python-level call to
+get_dashboard_summary() with each filter, both showed correct, different,
+real numbers immediately. Rewrote the browser driver to wait on the
+specific matching network response instead of a fixed delay, and every
+filter combination then matched the independently-verified numbers
+exactly (e.g. Severity=Fatal correctly showing 42 total, the severity
+chart collapsing to one bar, hotspots still showing all 5 areas). Rate
+limiting verified against the real configured 10/minute limit (not a
+toy example): 10 requests succeed, the 11th gets a real 429, and -
+the actual point of the limit - the 11th request is confirmed to never
+reach the mocked agent call at all. 182 backend tests passing.
+
 --------------------------------------------------
 6. AGENT (Python, src/mocolens/agent/) - LangGraph + Azure OpenAI
 --------------------------------------------------

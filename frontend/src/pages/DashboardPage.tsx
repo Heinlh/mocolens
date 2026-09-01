@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bike, Car, PersonStanding, RefreshCw, ShieldAlert } from 'lucide-react'
+import { AlertTriangle, Bike, Car, PersonStanding, RefreshCw, ShieldAlert } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { TopModeToggle } from '@/components/layout/TopModeToggle'
@@ -13,6 +13,7 @@ import { RoadUserDonutChart } from '@/components/charts/RoadUserDonutChart'
 import { CrashHotspotMap } from '@/components/maps/CrashHotspotMap'
 import { mockReferenceLocations } from '@/data/mock/crashes'
 import { getDashboardOverview } from '@/services/analyticsService'
+import { BackendError } from '@/lib/backendFetch'
 import type { DashboardFilters, DashboardResponse } from '@/types/analytics'
 import { formatDate } from '@/lib/format'
 
@@ -24,6 +25,13 @@ const DEFAULT_FILTERS: DashboardFilters = { timeRange: 'Last 12 months', area: '
 const TIME_RANGES = ['Last 12 months', 'Last 6 months', 'Year to date', 'All time']
 const ROAD_USERS = ['All road users', 'Pedestrians', 'Cyclists', 'Drivers']
 const SEVERITIES = ['All severity levels', 'Property damage only', 'Injury', 'Serious injury', 'Fatal']
+
+function describeError(err: unknown): string {
+  if (err instanceof BackendError && err.status === 429) {
+    return 'Too many requests right now. Please wait a moment and try again.'
+  }
+  return 'Something went wrong loading the dashboard. Please try again in a moment.'
+}
 
 interface FilterSelectProps {
   label: string
@@ -54,19 +62,53 @@ function FilterSelect({ label, value, options, onChange }: FilterSelectProps) {
 export function DashboardPage() {
   const navigate = useNavigate()
   const [data, setData] = useState<DashboardResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [filters, setFilters] = useState<DashboardFilters>(DEFAULT_FILTERS)
 
+  // Filters are real query params the backend applies in SQL - every
+  // change here re-fetches, it doesn't just re-slice what's already loaded.
   useEffect(() => {
-    getDashboardOverview().then(setData)
-  }, [])
+    let isCurrent = true
+    setError(null)
+    getDashboardOverview(filters).then(
+      (result) => {
+        if (isCurrent) setData(result)
+      },
+      (err) => {
+        if (isCurrent) setError(describeError(err))
+      },
+    )
+    return () => {
+      isCurrent = false
+    }
+  }, [filters])
 
+  // hotspots always covers every area regardless of the Area filter (see
+  // dashboard_service.py's docstring) - narrowed here client-side for the
+  // map, same as before; this is also what keeps the Area dropdown's own
+  // option list stable no matter which area is currently selected.
   const areaOptions = useMemo(() => ['All areas', ...(data?.hotspots.map((h) => h.area) ?? [])], [data])
-
   const visibleHotspots = useMemo(() => {
     if (!data) return []
     if (filters.area === 'All areas') return data.hotspots
     return data.hotspots.filter((h) => h.area === filters.area)
   }, [data, filters.area])
+
+  if (error) {
+    return (
+      <div className="min-h-screen">
+        <PageHeader centerSlot={<TopModeToggle />} />
+        <div className="px-4 py-10 md:px-8">
+          <Card className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-danger/15 text-danger">
+              <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <p className="text-sm text-text">{error}</p>
+          </Card>
+        </div>
+      </div>
+    )
+  }
 
   if (!data) {
     return (

@@ -2,20 +2,39 @@
 GET /api/dashboard/summary and POST /api/query - proving the vertical
 slice end to end before/after the agent. More endpoints (§21's full list)
 land as the pieces behind them are built.
+
+Rate limits (slowapi, in-memory - no Redis needed at this scale, and the
+whole app is one process): POST /api/query is capped tighter than the
+dashboard endpoint on purpose - it's the one that calls a real, billed LLM
+and runs for 10-40s, so it's both the most expensive to abuse and the
+easiest to accidentally hammer by refreshing while "Thinking..." sits on
+screen. GET /api/dashboard/summary just runs local DuckDB queries, so its
+limit exists to stop scripted abuse, not to constrain a person clicking
+through filters.
 """
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from . import dashboard_service, query_service
+from .dashboard_service import Filters
 from .schemas import DashboardResponse, QueryResponse
 
 logger = logging.getLogger(__name__)
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="MoCoLens API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Vite's dev server default, plus whatever the deployed frontend origin is
 # (set FRONTEND_ORIGIN when that's known - see PROJECT_STATUS.txt's
@@ -40,16 +59,26 @@ def health() -> dict:
 
 
 @app.get("/api/dashboard/summary", response_model=DashboardResponse, response_model_by_alias=True)
-def dashboard_summary() -> DashboardResponse:
+@limiter.limit("60/minute")
+def dashboard_summary(
+    request: Request,
+    time_range: str = "Last 12 months",
+    area: str = "All areas",
+    road_user: str = "All road users",
+    severity: str = "All severity levels",
+) -> DashboardResponse:
     try:
-        return dashboard_service.get_dashboard_summary()
+        return dashboard_service.get_dashboard_summary(
+            Filters(time_range=time_range, area=area, road_user=road_user, severity=severity)
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/query", response_model=QueryResponse, response_model_by_alias=True)
-def query(request: QueryRequest) -> QueryResponse:
-    question = request.question.strip()
+@limiter.limit("10/minute")
+def query(request: Request, body: QueryRequest) -> QueryResponse:
+    question = body.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="question must not be empty")
 

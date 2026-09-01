@@ -46,15 +46,31 @@ def test_metrics_has_four_kpi_cards_with_real_values():
         assert m["value"] > 0  # real trailing-12mo data always has some crashes
 
 
-def test_severity_breakdown_matches_known_real_totals():
+def test_severity_breakdown_matches_known_real_totals_all_time():
     # Exact counts verified independently in PROJECT_STATUS.txt / the
     # curation layer's own tests - if these ever drift, the pipeline
-    # changed underneath this endpoint.
-    data = client.get("/api/dashboard/summary").json()
+    # changed underneath this endpoint. severity_breakdown is windowed by
+    # time_range like everything else on this endpoint (it used to
+    # silently ignore the window, inconsistent with the KPI cards right
+    # next to it) - request "All time" explicitly to check the known
+    # stable totals rather than whatever the trailing-12mo window holds
+    # today, which shifts as new data is ingested.
+    data = client.get("/api/dashboard/summary?time_range=All time").json()
     by_label = {c["label"]: c["value"] for c in data["severityBreakdown"]}
     assert by_label["Property damage"] == 82463
     assert by_label["Injury"] == 41904
     assert by_label["Fatal"] == 402
+
+
+def test_severity_breakdown_respects_default_window_not_all_time():
+    # The default (no query params) is "Last 12 months" - must be strictly
+    # less than the all-time total, proving the window is actually applied
+    # by default and this isn't just the all-time check above in disguise.
+    default_data = client.get("/api/dashboard/summary").json()
+    all_time_data = client.get("/api/dashboard/summary?time_range=All time").json()
+    default_total = sum(c["value"] for c in default_data["severityBreakdown"])
+    all_time_total = sum(c["value"] for c in all_time_data["severityBreakdown"])
+    assert default_total < all_time_total
 
 
 def test_road_user_breakdown_percentages_sum_to_roughly_100():

@@ -91,14 +91,16 @@ export function AgentAnswer({ response, onFollowUpClick }: AgentAnswerProps) {
         <p className="text-xs text-text-muted">Caveats: {response.limitations.join(' ')}</p>
       )}
 
-      <div>
-        <h3 className="mb-2 text-sm font-semibold text-text-muted">Sources</h3>
-        <div className="flex flex-wrap gap-2">
-          {response.citations.map((citation) => (
-            <SourceChip key={citation.id} citation={citation} />
-          ))}
+      {response.citations.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-sm font-semibold text-text-muted">Sources</h3>
+          <div className="flex flex-wrap gap-2">
+            {response.citations.map((citation) => (
+              <SourceChip key={citation.id} citation={citation} />
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div>
         <h3 className="mb-2 text-sm font-semibold text-text-muted">Try one of these</h3>

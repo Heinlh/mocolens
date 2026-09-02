@@ -9,7 +9,13 @@ from pathlib import Path
 import chromadb
 from sentence_transformers import SentenceTransformer
 
-from ..processing.chunker import EMBEDDING_MODEL
+# Defined here, not in processing/chunker.py: this module is needed at API
+# serve time (search_reports embeds the query with the same model), and
+# chunker.py imports Docling at module level - pulling EMBEDDING_MODEL from
+# there would drag Docling (and its multi-GB GPU torch build) into the
+# serving process for a constant that has nothing to do with chunking.
+# chunker.py imports it from here instead.
+EMBEDDING_MODEL = "ibm-granite/granite-embedding-30m-english"
 
 _model: SentenceTransformer | None = None
 

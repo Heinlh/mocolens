@@ -8,7 +8,8 @@ import re
 from docling.chunking import HybridChunker
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 
-EMBEDDING_MODEL = "ibm-granite/granite-embedding-30m-english"
+from ..storage.vector_store import EMBEDDING_MODEL
+
 MAX_TOKENS = 800  # top of the doc's 500-900 token target (§9)
 
 _tokenizer = HuggingFaceTokenizer.from_pretrained(model_name=EMBEDDING_MODEL, max_tokens=MAX_TOKENS)

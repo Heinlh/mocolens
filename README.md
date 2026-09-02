@@ -37,7 +37,7 @@ at a running backend to see real data instead of mocks.
 ## Running the backend
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,ingest]"
 cp .env.example .env   # fill in AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT
 
 python scripts/ingest.py --domain vision_zero                # API + document extract

@@ -5,9 +5,7 @@ Chroma's default embedding function, so the model choice is ours to control
 and swap later, not Chroma's.
 """
 from pathlib import Path
-
-import chromadb
-from sentence_transformers import SentenceTransformer
+from typing import Any
 
 # Defined here, not in processing/chunker.py: this module is needed at API
 # serve time (search_reports embeds the query with the same model), and
@@ -17,10 +15,15 @@ from sentence_transformers import SentenceTransformer
 # chunker.py imports it from here instead.
 EMBEDDING_MODEL = "ibm-granite/granite-embedding-30m-english"
 
-_model: SentenceTransformer | None = None
+_model: Any | None = None
 
 
-def _get_model() -> SentenceTransformer:
+def _get_model():
+    # Importing sentence-transformers also imports PyTorch. Keep both out of
+    # the FastAPI startup path; they are only needed if the agent actually
+    # chooses semantic report search for a user question.
+    from sentence_transformers import SentenceTransformer
+
     global _model
     if _model is None:
         _model = SentenceTransformer(EMBEDDING_MODEL)
@@ -28,6 +31,10 @@ def _get_model() -> SentenceTransformer:
 
 
 def get_collection(domain: str, persist_dir: Path = Path("data/curated")):
+    # Chroma brings its own sizable dependency tree. Like the embedding
+    # model, load it only for report-index operations, not health/dashboard.
+    import chromadb
+
     client = chromadb.PersistentClient(path=str(persist_dir / domain / "chroma"))
     return client.get_or_create_collection(name=f"{domain}_reports")
 

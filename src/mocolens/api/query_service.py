@@ -6,13 +6,31 @@ import uuid
 
 from langchain_core.messages import ToolMessage
 
-from ..agent import graph as agent_graph
 from ..agent.schemas import AgentAnswer
 from ..processing.curate import latest_run_info
 from . import schemas
 
 DOMAIN = "vision_zero"
 _VIZ_TYPES = {"line", "bar", "map", "kpi", "table"}
+
+
+class _LazyAgentGraph:
+    """Keep LangGraph and the retrieval stack out of API startup.
+
+    Render's free instance has 512 MiB of RAM. Importing the complete agent
+    tool graph before Uvicorn binds its port can exhaust that budget even
+    when the request is only for /api/health or the dashboard. Tests also
+    patch ``agent_graph.run``, so this small proxy preserves that seam.
+    """
+
+    @staticmethod
+    def run(question: str):
+        from ..agent import graph
+
+        return graph.run(question)
+
+
+agent_graph = _LazyAgentGraph()
 
 
 def _extract_visualizations(messages: list) -> list[schemas.VisualizationSpec]:

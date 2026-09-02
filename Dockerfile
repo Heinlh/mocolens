@@ -23,7 +23,14 @@ COPY data/curated ./data/curated
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir .
 
-ENV PYTHONUNBUFFERED=1
-EXPOSE 8000
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TOKENIZERS_PARALLELISM=false \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    MALLOC_ARENA_MAX=2
+EXPOSE 10000
 
-CMD ["uvicorn", "mocolens.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render injects PORT (10000 by default). Shell form is required here so
+# the environment variable is expanded before Uvicorn starts.
+CMD ["sh", "-c", "exec uvicorn mocolens.api.main:app --host 0.0.0.0 --port ${PORT:-10000}"]

@@ -15,8 +15,23 @@ export class BackendError extends Error {
   }
 }
 
+function getBackendBaseUrl(): string | undefined {
+  const configuredUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
+  return configuredUrl ? configuredUrl.replace(/\/+$/, '') : undefined
+}
+
 export function isBackendConfigured(): boolean {
-  return Boolean(import.meta.env.VITE_API_BASE_URL)
+  return Boolean(getBackendBaseUrl())
+}
+
+function resolveBackendUrl(path: string): string {
+  const baseUrl = getBackendBaseUrl()
+  if (!baseUrl) {
+    throw new Error('VITE_API_BASE_URL is not configured')
+  }
+
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return `${baseUrl}${normalizedPath}`
 }
 
 /** Throws BackendError for a reachable-but-rejected response (4xx/5xx) -
@@ -25,8 +40,7 @@ export function isBackendConfigured(): boolean {
  * back to mock data, since that's the standalone-demo case.
  */
 export async function backendFetch(path: string, init?: RequestInit): Promise<Response> {
-  const base = import.meta.env.VITE_API_BASE_URL as string
-  const res = await fetch(`${base}${path}`, init)
+  const res = await fetch(resolveBackendUrl(path), init)
   if (!res.ok) {
     let detail = res.statusText
     try {

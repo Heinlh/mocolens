@@ -15,9 +15,10 @@ npm install
 npm run dev
 ```
 
-Copy `.env.example` to `.env` and set `VITE_API_BASE_URL` (e.g.
-`http://localhost:8001`) to see real data - see the repo root README for
-how to run the backend.
+Copy `.env.example` to `.env` and set `VITE_API_BASE_URL` to the origin of
+the backend you want to use. The fetch helper reads this value dynamically;
+no local or deployed server URL is hardcoded in the application source. See
+the repo root README for how to run the backend.
 
 Other scripts: `npm run build` (typecheck + production build), `npm run
 lint` (oxlint), `npm run preview` (serve the production build locally).

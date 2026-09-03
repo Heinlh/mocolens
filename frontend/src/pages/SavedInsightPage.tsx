@@ -11,6 +11,7 @@ import { CrashTrendChart } from '@/components/charts/CrashTrendChart'
 import { CorridorBarChart } from '@/components/charts/CorridorBarChart'
 import { getSavedInsight } from '@/services/queryService'
 import type { SavedInsight } from '@/types/insight'
+import { buildAskResultPath } from '@/lib/askRoute'
 
 export function SavedInsightPage() {
   const { id } = useParams<{ id: string }>()
@@ -144,7 +145,7 @@ export function SavedInsightPage() {
             <h3 className="text-sm font-semibold">Questions you might ask next</h3>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {insight.followUpPrompts.map((prompt) => (
-                <PromptChip key={prompt} label={prompt} onClick={() => navigate('/ask/result', { state: { question: prompt } })} />
+                <PromptChip key={prompt} label={prompt} onClick={() => navigate(buildAskResultPath(prompt))} />
               ))}
             </div>
           </Card>

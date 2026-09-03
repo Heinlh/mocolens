@@ -3,9 +3,9 @@
 ## Current status
 
 The Dashboard Overview screen and the Ask flow call the real Python backend
-(FastAPI + a LangGraph agent) when `VITE_API_BASE_URL` is set and the
-backend is reachable, and fall back to mock data automatically otherwise -
-so this app runs standalone with nothing else running. The Hotspots and
+(FastAPI + a LangGraph agent). Local development can run with mock data when
+`VITE_API_BASE_URL` is unset. Production deliberately reports configuration
+or API errors instead of showing an unrelated mock answer. The Hotspots and
 Sources pages are still mock-only (their backend endpoints aren't built yet).
 
 ## Running locally
@@ -26,8 +26,8 @@ lint` (oxlint), `npm run preview` (serve the production build locally).
 ## Architecture
 
 ```text
-pages/ -> services/ -> mocked responses           (always available)
-pages/ -> services/ -> fetch(VITE_API_BASE_URL)   (when configured and reachable)
+pages/ -> services/ -> mocked responses           (local development only)
+pages/ -> services/ -> fetch(dynamic API origin)  (production)
 ```
 
 - **`types/`** - the data contracts (`Metric`, `QueryResponse`,
@@ -39,10 +39,8 @@ pages/ -> services/ -> fetch(VITE_API_BASE_URL)   (when configured and reachable
   Montgomery County statistics.
 - **`services/`** (`analyticsService`, `queryService`, `sourceService`) -
   the only place pages read data from. `analyticsService.getDashboardOverview()`
-  and `queryService.ask()` call the real backend when `VITE_API_BASE_URL`
-  is set, catching any failure and falling back to mock data. The others
-  still resolve mock data directly. No page or component reads mock data
-  or calls `fetch` on its own.
+  and `queryService.ask()` call the real backend. The others still resolve
+  mock data directly. No page or component calls the backend on its own.
 - **`components/`** - shared UI split by concern: `layout/` (shell, sidebar,
   page header), `common/` (cards, chips, badges), `chat/` (Ask flow),
   `charts/` (Recharts wrappers), `maps/` (SVG hotspot map, no GIS
@@ -60,7 +58,9 @@ in later without changing the map components.
 ## Deployment
 
 Deploys to Vercel with root directory set to `frontend/`; `vercel.json`
-handles SPA routing (all paths rewrite to `index.html`). Set
-`VITE_API_BASE_URL` in the Vercel project's environment variables to point
-at a deployed backend - omit it (or leave the backend unreachable) and the
-site runs entirely on mock data, which is a safe default, not a broken state.
+handles SPA routing. Set `API_BASE_URL` in the Vercel project's environment
+variables to the deployed backend origin. The `/api/config` Vercel Function
+provides that public origin to the frontend at runtime; the existing
+`VITE_API_BASE_URL` name remains supported for compatibility. Production
+never silently substitutes mock data when configuration or networking fails.
+Mock responses are only used in local development when no backend is set.

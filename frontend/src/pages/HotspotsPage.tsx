@@ -11,6 +11,7 @@ import { getHotspots } from '@/services/analyticsService'
 import { HOTSPOTS_SUGGESTED_PROMPTS } from '@/constants/prompts'
 import type { HotspotsResponse } from '@/types/analytics'
 import { formatDate } from '@/lib/format'
+import { buildAskResultPath } from '@/lib/askRoute'
 
 const SUMMARY_ICONS = [MapPin, TrendingUp, Car]
 
@@ -23,7 +24,7 @@ export function HotspotsPage() {
   }, [])
 
   function handlePromptClick(prompt: string) {
-    navigate('/ask/result', { state: { question: prompt } })
+    navigate(buildAskResultPath(prompt))
   }
 
   if (!data) {

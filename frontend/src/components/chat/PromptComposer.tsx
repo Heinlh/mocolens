@@ -9,6 +9,7 @@ interface PromptComposerProps {
 
 export function PromptComposer({ placeholder = 'Ask a question...', onSubmit }: PromptComposerProps) {
   const [value, setValue] = useState('')
+  const maxLength = 400
 
   function submit() {
     const trimmed = value.trim()
@@ -40,6 +41,7 @@ export function PromptComposer({ placeholder = 'Ask a question...', onSubmit }: 
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
+        maxLength={maxLength}
         rows={2}
         className="w-full resize-none bg-transparent px-2 py-1 text-base text-text placeholder:text-text-muted focus:outline-none"
       />
@@ -53,6 +55,7 @@ export function PromptComposer({ placeholder = 'Ask a question...', onSubmit }: 
           </button>
         </div>
         <div className="flex items-center gap-1">
+          <span className="mr-1 text-xs text-text-muted" aria-live="polite">{value.length}/{maxLength}</span>
           <button type="button" aria-label="Voice input" className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface-elevated-2 hover:text-text">
             <Mic className="h-4 w-4" aria-hidden="true" />
           </button>

@@ -5,6 +5,7 @@ import { TopModeToggle } from '@/components/layout/TopModeToggle'
 import { PromptComposer } from '@/components/chat/PromptComposer'
 import { PromptChip } from '@/components/common/PromptChip'
 import { ASK_HOME_SUGGESTED_PROMPTS } from '@/constants/prompts'
+import { buildAskResultPath } from '@/lib/askRoute'
 
 const PROMPT_ICONS = [PersonStanding, MapPin, Landmark, Bike, Shield]
 
@@ -12,7 +13,7 @@ export function AskHomePage() {
   const navigate = useNavigate()
 
   function handleAsk(question: string) {
-    navigate('/ask/result', { state: { question } })
+    navigate(buildAskResultPath(question))
   }
 
   return (

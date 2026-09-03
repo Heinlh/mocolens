@@ -4,6 +4,7 @@ import { Landmark, Shield } from 'lucide-react'
 import { NEW_QUESTION_ICON, NEW_QUESTION_PATH, SIDEBAR_NAV_ITEMS } from '@/constants/navigation'
 import { getRecentQuestions } from '@/services/queryService'
 import type { ConversationEntry } from '@/types/query'
+import { buildAskResultPath } from '@/lib/askRoute'
 
 interface SidebarProps {
   /** Called after any navigating action - used to close the mobile drawer. */
@@ -26,7 +27,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   }
 
   function handleRecentQuestionClick(question: string) {
-    navigate('/ask/result', { state: { question } })
+    navigate(buildAskResultPath(question))
     onNavigate?.()
   }
 

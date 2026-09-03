@@ -15,13 +15,12 @@ data into curated DuckDB tables, exposes 5 deterministic tools (SQL,
 semantic search, source metadata, statistics, chart specs) to a LangGraph
 agent running on Azure OpenAI (`gpt-4.1-mini`), and serves 3 FastAPI
 endpoints - `/api/health`, `/api/dashboard/summary`, and `/api/query` (the
-agent). 157 tests, all passing.
+agent), with automated backend coverage for the API and agent behavior.
 
 The **frontend** (`frontend/`) is a 6-screen React app. The Dashboard
-Overview and Ask flow call the real backend when it's configured and
-reachable; every other screen still uses mock data. The frontend runs
-standalone (falls back to mock automatically) with no backend running at
-all, so it's safe to deploy on its own.
+Overview and Ask flow call the real backend; every other screen still uses
+mock data. Unconfigured local development uses mocks, while production
+shows API/configuration errors rather than substituting unrelated demo data.
 
 ## Running the frontend
 
@@ -69,23 +68,23 @@ frontend/               # React/TypeScript UI
 ## Frontend architecture
 
 ```text
-pages/ -> services/ -> data/mock/*         (always available, no backend needed)
-pages/ -> services/ -> fetch("/api/...")   (when VITE_API_BASE_URL is set and reachable)
+pages/ -> services/ -> data/mock/*         (unconfigured local development)
+pages/ -> services/ -> fetch("/api/...")   (dynamic backend origin)
 ```
 
-Pages never read mock data directly - they call a typed service function
-(`analyticsService`, `queryService`, `sourceService`). Each service function
-tries the real backend first when configured and falls back to mock data on
-any failure, so the deployed frontend degrades gracefully rather than
-breaking if the backend is unreachable.
+Pages call typed service functions (`analyticsService`, `queryService`,
+`sourceService`). The live Ask result consumes the backend's visualization
+spec, so each query can render a line chart, bar chart, map, KPI, or table
+based on its own verified result rows.
 
 See [frontend/README.md](frontend/README.md) for frontend-specific detail.
 
 ## Deployment
 
 The frontend deploys to Vercel (root directory `frontend/`, `frontend/vercel.json`
-handles SPA routing). The backend needs a host with a persistent filesystem
-for its DuckDB/Chroma files (Render, Railway, Fly.io, or a small VPS) - not
-a serverless platform. Once deployed, set `VITE_API_BASE_URL` in Vercel's
-project settings to the backend's public URL, and set `FRONTEND_ORIGIN` on
-the backend to the Vercel domain (for CORS).
+handles SPA routing). Deploy the backend container to Render, then set
+`API_BASE_URL` in Vercel's project settings to the Render service origin
+(for example, `https://your-service.onrender.com`) and redeploy. The
+`/api/config` Vercel Function exposes that origin to the browser at runtime;
+the legacy `VITE_API_BASE_URL` variable remains supported. Set
+`FRONTEND_ORIGIN` on Render to the Vercel domain for CORS.

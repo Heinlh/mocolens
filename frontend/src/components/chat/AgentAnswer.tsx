@@ -7,6 +7,7 @@ import { SourceChip } from '@/components/common/SourceChip'
 import { PromptChip } from '@/components/common/PromptChip'
 import { CrashTrendChart } from '@/components/charts/CrashTrendChart'
 import { MiniHotspotMap } from '@/components/maps/MiniHotspotMap'
+import { AgentVisualization } from '@/components/charts/AgentVisualization'
 
 interface AgentAnswerProps {
   response: QueryResponse
@@ -18,6 +19,9 @@ const METRIC_TONES: Array<'accent' | 'danger' | 'neutral'> = ['accent', 'danger'
 
 /** The full agent response: headline, KPIs, chart + mini map, plain-language context, sources, follow-ups. */
 export function AgentAnswer({ response, onFollowUpClick }: AgentAnswerProps) {
+  const liveVisualizations = response.visualizations.filter((visualization) => visualization.data)
+  const showLegacyMockVisuals = liveVisualizations.length === 0 && (response.metrics.length > 0 || response.crashTrend.length > 0 || response.hotspots.length > 0)
+
   return (
     <div className="flex flex-col gap-5">
       <Card className="flex flex-col gap-4">
@@ -31,7 +35,7 @@ export function AgentAnswer({ response, onFollowUpClick }: AgentAnswerProps) {
           </div>
         </div>
 
-        {response.metrics.length > 0 && (
+        {showLegacyMockVisuals && response.metrics.length > 0 && (
           <div className="grid gap-3 sm:grid-cols-3">
             {response.metrics.map((metric, index) => (
               <MetricCard key={metric.label} metric={metric} icon={METRIC_ICONS[index]} tone={METRIC_TONES[index]} />
@@ -40,7 +44,15 @@ export function AgentAnswer({ response, onFollowUpClick }: AgentAnswerProps) {
         )}
       </Card>
 
-      {(response.crashTrend.length > 0 || response.hotspots.length > 0) && (
+      {liveVisualizations.length > 0 && (
+        <div className="grid gap-5 lg:grid-cols-2">
+          {liveVisualizations.map((visualization) => (
+            <AgentVisualization key={visualization.id} spec={visualization} />
+          ))}
+        </div>
+      )}
+
+      {showLegacyMockVisuals && (response.crashTrend.length > 0 || response.hotspots.length > 0) && (
         <div className="grid gap-5 lg:grid-cols-2">
           {response.crashTrend.length > 0 && (
             <Card>

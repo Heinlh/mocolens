@@ -7,7 +7,7 @@ export const ASK_HOME_SUGGESTED_PROMPTS: string[] = [
 ]
 
 export const HOTSPOTS_SUGGESTED_PROMPTS: string[] = [
-  'Compare Silver Spring and Bethesda',
-  'Show pedestrian hotspots only',
-  'What changed since last year?',
+  'Compare crash hotspots in Silver Spring and Bethesda',
+  'Show pedestrian crash hotspots only',
+  'How have crash hotspots changed since last year?',
 ]

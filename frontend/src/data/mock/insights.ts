@@ -42,7 +42,7 @@ export const mockSavedInsights: Record<string, SavedInsight> = {
       'Where are the most dangerous intersections?',
       'How do crashes vary by time of day?',
       'What are the leading crash factors?',
-      'How does this compare to other areas?',
+      'How do Silver Spring pedestrian crashes compare to other areas?',
     ],
     citations: [
       { id: 'sc1', title: 'MDOT SHA Crash Data (2020-2024)', sourceType: 'dataset' },

@@ -10,6 +10,7 @@ import { ask } from '@/services/queryService'
 import { BackendConfigurationError, BackendError } from '@/lib/backendFetch'
 import type { QueryResponse } from '@/types/query'
 import { buildAskResultPath } from '@/lib/askRoute'
+import { isInsightSaved, saveInsight } from '@/lib/savedInsights'
 
 const DEFAULT_QUESTION = 'Have pedestrian crashes increased in Silver Spring since 2022?'
 
@@ -36,6 +37,7 @@ export function AskResultPage() {
 
   const [response, setResponse] = useState<QueryResponse | null>(null)
   const [error, setError] = useState<{ question: string; message: string } | null>(null)
+  const [savedResponseId, setSavedResponseId] = useState<string | null>(null)
 
   useEffect(() => {
     let isCurrent = true
@@ -44,6 +46,7 @@ export function AskResultPage() {
         if (isCurrent) {
           setError(null)
           setResponse(result)
+          setSavedResponseId(isInsightSaved(result.id) ? result.id : null)
         }
       },
       (err) => {
@@ -63,6 +66,11 @@ export function AskResultPage() {
     navigate(buildAskResultPath(prompt), { replace: true })
   }
 
+  function handleSave(result: QueryResponse) {
+    const saved = saveInsight(result)
+    if (saved) setSavedResponseId(saved.id)
+  }
+
   return (
     <div className="min-h-screen">
       <PageHeader centerSlot={<TopModeToggle />} />
@@ -76,7 +84,12 @@ export function AskResultPage() {
             <p className="text-sm text-text">{currentError}</p>
           </Card>
         ) : response && isShowingCurrentQuestion ? (
-          <AgentAnswer response={response} onFollowUpClick={handleFollowUp} />
+          <AgentAnswer
+            response={response}
+            onFollowUpClick={handleFollowUp}
+            onSave={handleSave}
+            isSaved={savedResponseId === response.id}
+          />
         ) : (
           <p className="text-sm text-text-muted">Thinking...</p>
         )}

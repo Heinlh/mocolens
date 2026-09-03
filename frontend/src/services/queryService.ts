@@ -12,9 +12,7 @@
  */
 import { backendFetch, BackendConfigurationError, BackendError } from '@/lib/backendFetch'
 import { mockQueryResponse, mockRecentQuestions } from '@/data/mock/conversations'
-import { mockSavedInsights } from '@/data/mock/insights'
 import type { ConversationEntry, QueryResponse } from '@/types/query'
-import type { SavedInsight } from '@/types/insight'
 
 export async function ask(question: string): Promise<QueryResponse> {
   try {
@@ -35,8 +33,4 @@ export async function ask(question: string): Promise<QueryResponse> {
 
 export async function getRecentQuestions(): Promise<ConversationEntry[]> {
   return mockRecentQuestions
-}
-
-export async function getSavedInsight(id: string): Promise<SavedInsight | undefined> {
-  return mockSavedInsights[id]
 }

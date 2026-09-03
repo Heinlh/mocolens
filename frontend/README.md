@@ -7,6 +7,8 @@ The Dashboard Overview screen and the Ask flow call the real Python backend
 `VITE_API_BASE_URL` is unset. Production deliberately reports configuration
 or API errors instead of showing an unrelated mock answer. The Hotspots and
 Sources pages are still mock-only (their backend endpoints aren't built yet).
+Saved Insights stores the exact live answer and its visualization payload in
+the current browser; it no longer opens a bundled Silver Spring example.
 
 ## Running locally
 

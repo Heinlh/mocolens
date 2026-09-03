@@ -69,10 +69,12 @@ export function DashboardPage() {
   // change here re-fetches, it doesn't just re-slice what's already loaded.
   useEffect(() => {
     let isCurrent = true
-    setError(null)
     getDashboardOverview(filters).then(
       (result) => {
-        if (isCurrent) setData(result)
+        if (isCurrent) {
+          setError(null)
+          setData(result)
+        }
       },
       (err) => {
         if (isCurrent) setError(describeError(err))

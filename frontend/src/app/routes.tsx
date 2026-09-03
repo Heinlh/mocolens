@@ -5,6 +5,7 @@ import { DashboardPage } from '@/pages/DashboardPage'
 import { HotspotsPage } from '@/pages/HotspotsPage'
 import { SourcesPage } from '@/pages/SourcesPage'
 import { SavedInsightPage } from '@/pages/SavedInsightPage'
+import { SavedInsightsPage } from '@/pages/SavedInsightsPage'
 import { AboutPage } from '@/pages/AboutPage'
 
 export function AppRoutes() {
@@ -16,6 +17,7 @@ export function AppRoutes() {
       <Route path="/dashboard" element={<DashboardPage />} />
       <Route path="/dashboard/hotspots" element={<HotspotsPage />} />
       <Route path="/sources" element={<SourcesPage />} />
+      <Route path="/saved-insights" element={<SavedInsightsPage />} />
       <Route path="/saved-insights/:id" element={<SavedInsightPage />} />
       <Route path="/about" element={<AboutPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />

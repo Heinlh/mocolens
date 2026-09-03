@@ -1,4 +1,4 @@
-import { CheckCircle2, PersonStanding, ShieldCheck, TrendingUp, Users2 } from 'lucide-react'
+import { Bookmark, Check, CheckCircle2, PersonStanding, ShieldCheck, TrendingUp, Users2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { QueryResponse } from '@/types/query'
 import { Card } from '@/components/common/Card'
@@ -12,27 +12,42 @@ import { AgentVisualization } from '@/components/charts/AgentVisualization'
 interface AgentAnswerProps {
   response: QueryResponse
   onFollowUpClick: (prompt: string) => void
+  onSave?: (response: QueryResponse) => void
+  isSaved?: boolean
 }
 
 const METRIC_ICONS: LucideIcon[] = [PersonStanding, PersonStanding, TrendingUp]
 const METRIC_TONES: Array<'accent' | 'danger' | 'neutral'> = ['accent', 'danger', 'danger']
 
 /** The full agent response: headline, KPIs, chart + mini map, plain-language context, sources, follow-ups. */
-export function AgentAnswer({ response, onFollowUpClick }: AgentAnswerProps) {
+export function AgentAnswer({ response, onFollowUpClick, onSave, isSaved = false }: AgentAnswerProps) {
   const liveVisualizations = response.visualizations.filter((visualization) => visualization.data)
   const showLegacyMockVisuals = liveVisualizations.length === 0 && (response.metrics.length > 0 || response.crashTrend.length > 0 || response.hotspots.length > 0)
 
   return (
     <div className="flex flex-col gap-5">
       <Card className="flex flex-col gap-4">
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-positive/15 text-positive">
-            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-          </span>
-          <div>
-            <h2 className="text-xl font-bold leading-snug md:text-2xl">{response.answer}</h2>
-            <p className="mt-1 text-sm text-text-muted md:text-base">{response.summary}</p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-positive/15 text-positive">
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <div>
+              <h2 className="text-xl font-bold leading-snug md:text-2xl">{response.answer}</h2>
+              <p className="mt-1 text-sm text-text-muted md:text-base">{response.summary}</p>
+            </div>
           </div>
+          {onSave && (
+            <button
+              type="button"
+              onClick={() => onSave(response)}
+              disabled={isSaved}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:border-accent/60 hover:text-text disabled:cursor-default disabled:border-positive/40 disabled:text-positive"
+            >
+              {isSaved ? <Check className="h-4 w-4" aria-hidden="true" /> : <Bookmark className="h-4 w-4" aria-hidden="true" />}
+              {isSaved ? 'Saved' : 'Save'}
+            </button>
+          )}
         </div>
 
         {showLegacyMockVisuals && response.metrics.length > 0 && (

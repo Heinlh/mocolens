@@ -18,9 +18,10 @@ endpoints - `/api/health`, `/api/dashboard/summary`, and `/api/query` (the
 agent), with automated backend coverage for the API and agent behavior.
 
 The **frontend** (`frontend/`) is a 6-screen React app. The Dashboard
-Overview and Ask flow call the real backend; every other screen still uses
-mock data. Unconfigured local development uses mocks, while production
-shows API/configuration errors rather than substituting unrelated demo data.
+Overview and Ask flow call the real backend, and Saved Insights stores real
+answers in the user's browser. The Hotspots and Sources screens still use
+mock data. Unconfigured local development uses mocks, while production shows
+API/configuration errors rather than substituting unrelated demo data.
 
 ## Running the frontend
 

@@ -1,21 +1,8 @@
-import type { Metric, TimeSeriesPoint } from './analytics'
-import type { Citation } from './sources'
+import type { QueryResponse } from './query'
 
-export interface CorridorStat {
-  corridor: string
-  crashCount: number
-}
-
-export interface SavedInsight {
+/** A real Ask response saved by the current browser. */
+export interface SavedQueryInsight {
   id: string
-  title: string
-  tag: string
-  generatedAt: string
-  summary: string
-  metrics: Metric[]
-  crashTrend: TimeSeriesPoint[]
-  corridors: CorridorStat[]
-  findings: string[]
-  followUpPrompts: string[]
-  citations: Citation[]
+  savedAt: string
+  response: QueryResponse
 }

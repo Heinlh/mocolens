@@ -11,7 +11,7 @@ export const NEW_QUESTION_PATH = '/ask'
 
 export const SIDEBAR_NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/dashboard', icon: LayoutGrid },
-  { label: 'Saved insights', path: '/saved-insights/silver-spring-pedestrian-safety', icon: Bookmark },
+  { label: 'Saved insights', path: '/saved-insights', icon: Bookmark },
   { label: 'Sources', path: '/sources', icon: BookOpen },
   { label: 'About', path: '/about', icon: Info },
 ]

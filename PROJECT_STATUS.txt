@@ -1,5 +1,5 @@
 MOCOLENS - PROJECT STATUS
-Last updated: 2026-08-31 (evening)
+Last updated: 2026-09-03
 Full target architecture: MoCoLens_MVP_ARCHITECTURE.md (this file tracks build progress against it)
 
 ==================================================
@@ -63,9 +63,14 @@ PyMuPDF, approved by the user):
                            - HybridChunker, tokenizer-aware, keeps
                              headers/footers/tables/page numbers intact
   Embeddings              : ibm-granite/granite-embedding-30m-english
-                           (Apache 2.0, via sentence-transformers, CPU-only)
-  Vector DB               : Chroma, PersistentClient, local disk
-                           (data/curated/<domain>/chroma/)
+                           (Apache 2.0, CPU-only). Originally run through
+                           sentence-transformers; now run through
+                           onnxruntime from a float16 ONNX export in
+                           models/ - see resolved issue 4 below.
+  Vector index            : flat float32 array + JSON records in one .npz
+                           (data/curated/<domain>/reports_index.npz),
+                           searched by exact dot product. Was Chroma
+                           until resolved issue 4 below.
 
 All three are free, local, no API keys, no paid tier - matches the
 architecture doc's "local development, low cost" principle exactly.
@@ -77,8 +82,11 @@ Files:
   src/mocolens/processing/runner.py      - orchestrates parse->chunk->embed->
                                             index for one domain, skips
                                             already-processed PDFs unless --force
-  src/mocolens/storage/vector_store.py   - Chroma collection get/upsert/search
+  src/mocolens/storage/vector_store.py   - ONNX encoder + flat index
+                                            load/upsert/search
   scripts/rebuild_vector_index.py        - CLI: python scripts/rebuild_vector_index.py --domain vision_zero
+  scripts/export_embedding_onnx.py       - one-off: writes the ONNX query
+                                            encoder into models/
 
 Verified live: ran the real pipeline against all 5 downloaded Vision
 Zero PDFs. All 5 completed - parsed, chunked (319 chunks total),
@@ -655,9 +663,9 @@ Also not yet built, called out explicitly in the architecture doc:
     the fact too)
   - No evaluation harness yet (the user's own stated ordering also puts
     this last, after the agent exists to evaluate)
-  - Deployment of anything - frontend (Vercel recommended) or backend
-    (needs persistent disk for DuckDB + Chroma, so Render/Railway/Fly.io
-    or a small VPS, NOT serverless functions)
+  - (Superseded: both are now deployed - frontend on Vercel, backend on
+    Render, with the curated data and the ONNX encoder baked into the
+    image rather than needing a persistent disk.)
 
 ==================================================
 RESOLVED ISSUES
@@ -691,12 +699,91 @@ RESOLVED ISSUES
    edges of a fixed trailing window. See section 5 - fixed by reusing the
    already-correct trailing-12mo-vs-prior-12mo KPI figure instead.
 
+4. [RESOLVED 2026-09-03] Live on the deployed app, most plainly-worded
+   questions were rejected before reaching the agent, and the ones that
+   were not could hang for minutes or be OOM-killed. Four separate
+   causes, all confirmed by reproducing them against the live service:
+
+   a. The topical gate in api/main.py was a keyword allowlist that
+      matched none of "What is the safest area in moco to drive in?",
+      "Which areas should i avoid driving in moco?", or "Which areas are
+      the riskiest to drive in?" - all three returned HTTP 400 with
+      "MoCoLens answers questions about Montgomery County roads...".
+      Broadened the vocabulary and retuned it to over-accept: a false
+      accept costs one cheap LLM call the rate limits already cap, a
+      false reject makes the app look broken. Anything that gets through
+      is now declined by the agent itself. 8 of those real questions are
+      pinned as regression tests.
+
+   b. Render's "exceeded its memory limit" email: importing
+      sentence-transformers pulls PyTorch, measured at +390 MB RSS on
+      its own, against a 512 MB instance. Peak measured 600 MB, so any
+      question that triggered search_reports thrashed or was killed -
+      which is why a report question sat on "Thinking..." for over two
+      minutes. The query encoder now runs under onnxruntime from a
+      float16 ONNX export (scripts/export_embedding_onnx.py). Verified
+      retrieval-identical: cosine 0.9999999 against the float32 graph
+      and the same top-5, in the same order, on every query tried.
+      int8 was tried first and rejected - per-tensor and per-channel,
+      QInt8 and QUInt8 all reordered the top-5 badly.
+
+   c. Chroma cost ~85 MB of RSS to import and open a collection holding
+      319 chunks. Replaced with a flat float32 array in one .npz,
+      searched by exact dot product. Migrated using the vectors already
+      stored in Chroma, so the index holds the same numbers; 9 of 10
+      test queries return the identical ranking and the tenth differs
+      only because Chroma's approximate index had two near-ties (0.67243
+      vs 0.67246) in the wrong order.
+
+   d. retrieval/sql_tool.py rebuilt its DuckDB sandbox - both fact
+      tables, ~63 MB - on every single LLM-issued query, up to 3 per
+      question. It is now built once and reused, with each query running
+      on its own cursor. Verified a cursor still cannot read files or
+      re-enable external access, and that one query's timeout cannot
+      abort another.
+
+   Net: peak RSS across the whole serving path went from 600 MB to
+   ~310 MB, and the questions above now answer in 6-17 seconds. Also
+   verified the serving path imports none of torch, sentence-transformers,
+   chromadb, transformers, docling or onnx, by making them unimportable
+   and running the full path.
+
+5. [RESOLVED 2026-09-03] Rate limiting applied one shared bucket to every
+   visitor. slowapi's get_ipaddr looks up a header named "X_FORWARDED_FOR"
+   with underscores, which no proxy sends, so behind Render's proxy it
+   fell through to the proxy's own IP - the same key for everybody, so
+   the first ten questions of any minute locked out every other user.
+   Replaced with a key function that reads the real X-Forwarded-For
+   header. The existing regression test for this was failing and now
+   passes.
+
+6. [RESOLVED 2026-09-03] Two analytical-integrity bugs in agent answers,
+   both fixed at the tool docstring and system prompt rather than in
+   code, since the SQL is the model's to write:
+     - "What is the safest area to drive in?" was answered by ranking on
+       the lowest crash count, which named four arbitrary cul-de-sacs
+       out of the 2,782 roads that have exactly one recorded crash. The
+       prompt now forbids ranking safety on raw counts, requires the
+       comparison to be made within a set that has real volume, and
+       explicitly forbids refusing the question outright - an honest
+       partial answer plus its caveat, not a caveat on its own.
+     - road_name is NULL on 24.6% of rows, so any unfiltered "top roads"
+       ranking puts the null group first by a factor of 23. The
+       query_analytics tool description now says so.
+
+7. [RESOLVED 2026-09-03] The Ask screen had no request timeout, so a
+   stalled backend left "Thinking..." on screen indefinitely with
+   nothing to retry - the state captured in the reported screenshots.
+   backendFetch now bounds every request at 120s (the agent legitimately
+   runs for tens of seconds, so a short timeout would be wrong) and
+   surfaces a plain-English message.
+
 ==================================================
 OPEN ISSUES
 ==================================================
 1. Document coverage gap noted above (5 of ~30 linked reports discovered
    - static-HTML crawler limitation, not a bug).
-2. Repo has no git history yet (no `git init` has been run).
+2. (Resolved - the repo is on git and deployed from it.)
 
 ==================================================
 WHERE THINGS LIVE
@@ -704,15 +791,18 @@ WHERE THINGS LIVE
 config/sources.yaml           domain + source registry (API + document sources)
 data/raw/                     immutable downloaded API JSON + PDFs + manifest
 data/processed/                parsed markdown + chunk JSONL per document
-data/curated/                 Chroma persistent vector store AND DuckDB
-                               analytics.duckdb + fact_*.parquet, per domain
+data/curated/                 reports_index.npz (flat vector index) AND
+                               DuckDB analytics.duckdb + fact_*.parquet,
+                               per domain
+models/                       float16 ONNX export of the query encoder
+                               (granite-embedding-30m) + its tokenizer
 logs/ingestion/runs.jsonl     one line per extract-layer source run
 logs/curation/runs.jsonl      one line per structured-transform run
 logs/retrieval/sql_queries.jsonl  audit log of every query_analytics call
 src/mocolens/ingestion/       extract layer (done)
 src/mocolens/processing/      PDF/vector processing (done) +
                                transforms/ structured ETL (done)
-src/mocolens/storage/         Chroma vector_store + DuckDB duckdb_store (done)
+src/mocolens/storage/         vector_store (ONNX + .npz) + duckdb_store (done)
 src/mocolens/retrieval/       5 agent tools (done) - now called by the agent
 src/mocolens/api/             FastAPI app - 3 of ~6 planned endpoints (done):
                                /api/health, /api/dashboard/summary, /api/query
@@ -722,6 +812,6 @@ frontend/                     6-screen React app (done) - Dashboard Overview
                                AND the Ask flow backed by real data, the
                                Hotspots page and Sources page still mock
 .env.example                  AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT
-tests/                         157 tests total across the whole backend
-                               as of this update (tests/api/test_query.py
-                               is the newest)
+tests/                         213 tests total across the whole backend
+                               as of this update (tests/storage/
+                               test_vector_store.py is the newest)

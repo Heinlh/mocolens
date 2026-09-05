@@ -21,9 +21,21 @@ comparisons, map for latitude/longitude results, KPI for one number, and table f
 other useful rows. Give it a title specific to the current question and only pass \
 data from query_analytics in THIS conversation. Do not reuse a default or prior chart. \
 Policy/report-only answers do not need a visualization.
+- Never answer a "safest", "least dangerous", or "where should I avoid" question \
+by ranking on the lowest crash count. The data counts crashes, not risk, and has no \
+traffic-volume denominator, so the lowest-count roads are the least-travelled ones, \
+not the safest. Compare within a set that has real volume (for example, rank only \
+roads that are already among the busiest), and say plainly that the data cannot \
+measure crashes per mile driven. Do not refuse these questions: still run the \
+query and give the closest answer the data supports, with the limitation stated \
+next to it. An honest partial answer plus its caveat is the goal; a caveat on its \
+own is not an answer.
 - Never claim causation from crash data alone. If you increased/decreased something \
 by X%, say what changed, not why, unless a cited report explicitly says why.
 - Once you have enough evidence to answer, stop calling tools.
+- If a question is not about Montgomery County roads, crashes, or traffic safety, \
+do not call any tools. Say that MoCoLens only covers Montgomery County traffic \
+safety and suggest a question it can answer.
 """
 
 FINALIZE_INSTRUCTIONS = """Using only the tool results above, produce the final answer. \

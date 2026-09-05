@@ -6,6 +6,8 @@ PROJECT_STATUS.txt; this suite would otherwise need real Azure OpenAI
 credentials and cost real tokens on every run.
 """
 import json
+import pathlib
+import re
 from unittest.mock import patch
 
 import pytest
@@ -205,6 +207,75 @@ def test_query_endpoint_accepts_normal_feature_questions(mock_ask):
         "What does the county say it is doing about dangerous roads?",
     ]
     assert [client.post("/api/query", json={"question": q}).status_code for q in questions] == [200, 200, 200]
+
+
+@pytest.mark.parametrize("question", [
+    # Every one of these was rejected as off-topic by the keyword-allowlist
+    # gate that used to guard this endpoint, live on the deployed app. They
+    # are ordinary questions; the allowlist simply had no word in common
+    # with them. The gate is inverted now (see main.py's _OFF_TOPIC_RE) -
+    # this list is the regression fence around that.
+    "is moco safe to drive in?",
+    "What is the safest area in moco to drive in?",
+    "Which areas should i avoid driving in moco?",
+    "Which areas are the riskiest to drive in?",
+    "What is the riskiest place to drive in moco and cite the data to back it up",
+    "How many people died on our streets last year?",
+    "Where do kids get hit walking to school?",
+    "Is it dangerous to bike to work here?",
+    "Which neighborhood has the worst speeding problem?",
+    # No traffic vocabulary at all - the phrasing a person actually uses
+    # once they are already looking at a traffic-safety app.
+    "Where should I avoid?",
+    "What changed last year?",
+    "How bad is it out there?",
+    "Is my neighborhood getting better or worse?",
+    "What are the worst spots near me?",
+    "Rank the top ten locations.",
+    "Show me a map of the problem areas",
+    "Has anything improved since the plan started?",
+    "give me the trend over the last five years",
+    "What time of day is worst?",
+    "Are things trending up or down?",
+    "summarize the data for me",
+    "why is 355 so bad?",
+    "Tell me about Georgia Ave",
+    # "code" as in traffic code, not source code - the blocklist must not
+    # collide with the domain's own vocabulary.
+    "What is the traffic code for speeding here?",
+])
+@patch("mocolens.api.main.query_service.ask")
+def test_query_endpoint_accepts_plainly_worded_safety_questions(mock_ask, question):
+    mock_ask.return_value = schemas.QueryResponse(
+        id="q", question=question, answer="a", summary="s", what_data_means="m",
+    )
+    assert client.post("/api/query", json={"question": question}).status_code == 200
+
+
+def _suggested_prompts() -> list[str]:
+    """The prompt cards the frontend actually ships, read from source.
+
+    Read rather than duplicated on purpose: a card the scope gate rejects is
+    a broken button on the home page, and that is exactly the bug this
+    endpoint shipped with. Duplicating the list here would let the two drift
+    right back apart.
+    """
+    src = pathlib.Path(__file__).parents[2] / "frontend/src/constants/prompts.ts"
+    return re.findall(r"^\s+'(.+?)',$", src.read_text(encoding="utf-8"), re.MULTILINE)
+
+
+@patch("mocolens.api.main.query_service.ask")
+def test_query_endpoint_accepts_every_suggested_prompt_card(mock_ask):
+    mock_ask.return_value = schemas.QueryResponse(
+        id="q", question="q", answer="a", summary="s", what_data_means="m",
+    )
+    prompts = _suggested_prompts()
+    assert len(prompts) >= 8, f"prompts.ts parse looks wrong: {prompts}"
+    rejected = [
+        p for p in prompts
+        if client.post("/api/query", json={"question": p}).status_code != 200
+    ]
+    assert not rejected, f"suggested prompt cards rejected by the scope gate: {rejected}"
 
 
 @patch("mocolens.api.main.query_service.ask")

@@ -10,7 +10,7 @@ up-to-date account of what's built, tested, and verified live.
 The **backend** (`src/mocolens/`) is a working pipeline end to end: it
 pulls live crash data from Montgomery County's Socrata API and Vision Zero
 report PDFs into a raw data lake, parses/chunks/embeds the PDFs (Docling +
-IBM Granite embeddings) into a Chroma vector store, normalizes the crash
+IBM Granite embeddings) into a flat vector index, normalizes the crash
 data into curated DuckDB tables, exposes 5 deterministic tools (SQL,
 semantic search, source metadata, statistics, chart specs) to a LangGraph
 agent running on Azure OpenAI (`gpt-4.1-mini`), and serves 3 FastAPI
@@ -40,6 +40,8 @@ at a running backend to see real data instead of mocks.
 python -m pip install -e ".[dev,ingest]"
 cp .env.example .env   # fill in AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT
 
+python scripts/export_embedding_onnx.py                      # question encoder -> models/
+
 python scripts/ingest.py --domain vision_zero                # API + document extract
 python scripts/build_curated_tables.py --domain vision_zero  # normalize -> DuckDB
 python scripts/rebuild_vector_index.py --domain vision_zero  # parse, chunk, embed, index
@@ -57,7 +59,7 @@ config/sources.yaml    # source registry (API + document sources per domain)
 src/mocolens/
   ingestion/            # extract layer: Socrata API + document crawler
   processing/           # PDF parsing/chunking/embedding + structured ETL (transforms/)
-  storage/              # Chroma + DuckDB wrappers
+  storage/              # vector index + DuckDB wrappers
   retrieval/            # 5 deterministic agent tools
   agent/                # LangGraph agent (Azure OpenAI)
   api/                  # FastAPI app

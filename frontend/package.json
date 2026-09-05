@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "node scripts/test-saved-insights.mjs",
+    "test": "node scripts/test-saved-insights.mjs && node scripts/test-page-services.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

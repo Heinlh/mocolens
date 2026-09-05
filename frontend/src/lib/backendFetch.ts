@@ -15,6 +15,12 @@ export class BackendError extends Error {
   }
 }
 
+/** The agent legitimately runs for tens of seconds, so there is no useful
+ * short timeout - but with none at all a stalled backend leaves the Ask
+ * screen on "Thinking..." forever with nothing to retry. This bounds that.
+ */
+const REQUEST_TIMEOUT_MS = 120_000
+
 export class BackendConfigurationError extends BackendError {
   constructor(message = 'The live data service is not configured for this deployment.') {
     super(503, message)
@@ -70,9 +76,15 @@ async function resolveBackendUrl(path: string): Promise<string> {
 export async function backendFetch(path: string, init?: RequestInit): Promise<Response> {
   let response: Response
   try {
-    response = await fetch(await resolveBackendUrl(path), init)
+    response = await fetch(await resolveBackendUrl(path), {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
   } catch (err) {
     if (err instanceof BackendError) throw err
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new BackendError(504, 'That took too long to answer. Please try asking again.')
+    }
     throw new BackendError(0, 'The live data service could not be reached. Please try again shortly.')
   }
 
@@ -88,4 +100,18 @@ export async function backendFetch(path: string, init?: RequestInit): Promise<Re
   }
 
   return response
+}
+
+/** Plain-language text for a failed page load. Rate limiting and an
+ * unavailable service get their own wording because "try again shortly" is
+ * actionable there and misleading for everything else.
+ */
+export function describeLoadError(err: unknown, subject: string): string {
+  if (err instanceof BackendError && err.status === 429) {
+    return 'Too many requests right now. Please wait a moment and try again.'
+  }
+  if (err instanceof BackendError && err.status === 503) {
+    return `${subject} is not available right now. Please try again in a moment.`
+  }
+  return `Something went wrong loading ${subject.toLowerCase()}. Please try again in a moment.`
 }

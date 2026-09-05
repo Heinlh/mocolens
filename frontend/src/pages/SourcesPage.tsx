@@ -3,29 +3,38 @@ import { AlertTriangle, Scale, Shield, TrendingUp } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { TopModeToggle } from '@/components/layout/TopModeToggle'
+import { PageStatus } from '@/components/layout/PageStatus'
+import { describeLoadError } from '@/lib/backendFetch'
 import { Card } from '@/components/common/Card'
 import { DataSourceCard } from '@/components/sources/DataSourceCard'
 import { CitationTable } from '@/components/sources/CitationTable'
 import { getSources } from '@/services/sourceService'
+import { CAVEATS, METHODOLOGY_STEPS } from '@/constants/methodology'
 import type { SourcesResponse } from '@/types/sources'
 
 const CAVEAT_ICONS: Record<string, LucideIcon> = { rates: Scale, reporting: AlertTriangle, causation: TrendingUp }
 
 export function SourcesPage() {
   const [data, setData] = useState<SourcesResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    getSources().then(setData)
+    let isCurrent = true
+    getSources().then(
+      (result) => {
+        if (isCurrent) setData(result)
+      },
+      (err) => {
+        if (isCurrent) setError(describeLoadError(err, 'Sources'))
+      },
+    )
+    return () => {
+      isCurrent = false
+    }
   }, [])
 
-  if (!data) {
-    return (
-      <div className="min-h-screen">
-        <PageHeader centerSlot={<TopModeToggle />} />
-        <p className="px-8 py-10 text-sm text-text-muted">Loading sources...</p>
-      </div>
-    )
-  }
+  if (error) return <PageStatus message={error} tone="error" />
+  if (!data) return <PageStatus message="Loading sources..." />
 
   return (
     <div className="min-h-screen">
@@ -56,7 +65,7 @@ export function SourcesPage() {
         <section>
           <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">How MoCoLens answers a question</h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {data.methodologySteps.map((step) => (
+            {METHODOLOGY_STEPS.map((step) => (
               <Card key={step.step} className="flex flex-col gap-2">
                 <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-sm font-bold text-black">
                   {step.step}
@@ -69,14 +78,19 @@ export function SourcesPage() {
         </section>
 
         <section>
-          <h2 className="mb-3 text-lg font-semibold">What we cite</h2>
+          <h2 className="mb-1 text-lg font-semibold">What we cite</h2>
+          <p className="mb-3 text-sm text-text-muted">
+            Every county document MoCoLens can quote — {data.citations.length}{' '}
+            {data.citations.length === 1 ? 'report' : 'reports'}, {data.indexedChunkCount.toLocaleString()} searchable
+            passages.
+          </p>
           <CitationTable citations={data.citations} />
         </section>
 
         <section>
           <h2 className="mb-3 text-lg font-semibold">Things to keep in mind</h2>
           <div className="grid gap-4 sm:grid-cols-3">
-            {data.caveats.map((caveat) => {
+            {CAVEATS.map((caveat) => {
               const Icon = CAVEAT_ICONS[caveat.id] ?? AlertTriangle
               return (
                 <Card key={caveat.id} className="flex flex-col gap-2">

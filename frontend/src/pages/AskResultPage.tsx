@@ -23,8 +23,9 @@ function describeError(err: unknown): string {
   if (err instanceof BackendError && err.status === 429) {
     return "You're asking questions faster than I can research them. Please wait a moment and try again."
   }
-  if (err instanceof BackendError && (err.status === 400 || err.status === 422)) return err.message
-  if (err instanceof BackendError && err.status === 0) return err.message
+  // 400/422 carry the API's own wording, 0 is "unreachable", 504 is the
+  // client-side timeout - all three already read as plain English.
+  if (err instanceof BackendError && [0, 400, 422, 504].includes(err.status)) return err.message
   return 'Something went wrong while answering that question. Please try again in a moment.'
 }
 

@@ -3,8 +3,8 @@
  * These values are used to develop the frontend and are not verified
  * Montgomery County crash statistics.
  */
-import type { DashboardResponse, HotspotsResponse } from '@/types/analytics'
-import { mockHotspots, toRankedAreas } from './crashes'
+import type { DashboardResponse } from '@/types/analytics'
+import { mockHotspots } from './crashes'
 
 export const mockDashboard: DashboardResponse = {
   dataAsOf: '2026-06-30',
@@ -41,20 +41,4 @@ export const mockDashboard: DashboardResponse = {
     { id: 'i2', text: 'Cyclist crashes have increased 8% compared to last year.' },
     { id: 'i3', text: 'Serious or fatal crashes make up 3.5% of all crashes but account for most life-changing impacts.' },
   ],
-}
-
-export const mockHotspotsResponse: HotspotsResponse = {
-  hotspots: mockHotspots,
-  rankedAreas: toRankedAreas(mockHotspots),
-  summaryCards: [
-    { label: 'Most affected area', primaryText: 'Silver Spring', secondaryText: '1,248 crashes · 18% of all county crashes' },
-    { label: 'Fastest increase', primaryText: 'Silver Spring', secondaryText: '+12% vs. Jan 2020 – Dec 2021' },
-    { label: 'Common crash type', primaryText: 'Rear-end crashes', secondaryText: '36% of all crashes in the county' },
-  ],
-  countyFocusAreas: [
-    'Upgrading crosswalks in high-crash areas',
-    'Reducing speeds on major roads with more severe crashes',
-    'Improving corridors with the highest crash increases',
-  ],
-  dataAsOf: 'Jan 2022 – Apr 2024',
 }

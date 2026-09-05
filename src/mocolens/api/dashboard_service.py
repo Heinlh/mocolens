@@ -13,23 +13,38 @@ not a client-side illusion. All 4 combine with AND; anything that collapses
 a breakdown to one category (e.g. severity=Fatal + "crashes by severity")
 is an honest, correct reflection of the filter, not special-cased away.
 
-One deliberate exception: `hotspots` never applies the area filter to
-itself, even though area filters everything else. It's the "by area"
-breakdown - the frontend's Area dropdown is populated from
+get_dashboard_map() is the one function here that reads something other
+than DuckDB: its "what the county is focusing on" panel comes from a fixed
+semantic search over the report index, so that panel states what county
+documents actually say instead of hardcoded prose. The query is a constant
+and the index is static, so the result is cached for the process.
+
+One deliberate exception: the summary endpoint's `hotspots` never applies
+the area filter to itself, even though area filters everything else. It's the
+"by area" breakdown - the frontend's Area dropdown is populated from
 `hotspots.map(h => h.area)`, so if hotspots came back pre-narrowed to the
 selected area, every other area would vanish from the dropdown the moment
 one was picked. hotspots always returns every area (respecting the other
 3 filters); the frontend narrows it to one area client-side for the map
 display, same as it always has.
+
+The two hotspot groupings are deliberately different, and not interchangeable:
+the summary's `_hotspots` groups by reporting agency because that is what its
+Area filter selects on, while the map's `_cell_hotspots` groups by geographic
+cell because an agency covers most of the county and its centroid is not a
+place where crashes concentrate.
 """
 import calendar
+import re
 from dataclasses import dataclass, replace
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 
 import duckdb
 
-from ..processing.curate import latest_run_info
+from ..processing.curate import data_as_of
+from ..retrieval.report_tool import search_reports
 from ..retrieval.statistics_tool import percent_change
 from ..storage import duckdb_store
 from . import schemas
@@ -42,6 +57,25 @@ _SEVERITY_LABELS = {
     "fatal": "Fatal",
     "unknown": "Unknown",
 }
+# Raw Socrata collision codes are all-caps shorthand; these are the public
+# wordings for the ones that actually occur. Anything unmapped falls back to
+# title case rather than being hidden, so a new upstream code still shows.
+_COLLISION_LABELS = {
+    "SAME DIR REAR END": "Rear-end (same direction)",
+    "FRONT TO REAR": "Rear-end (front to rear)",
+    "SINGLE VEHICLE": "Single vehicle",
+    "STRAIGHT MOVEMENT ANGLE": "Angle (straight movement)",
+    "SAME DIRECTION SIDESWIPE": "Sideswipe (same direction)",
+    "OPPOSITE DIRECTION SIDESWIPE": "Sideswipe (opposite direction)",
+    "HEAD ON LEFT TURN": "Head-on left turn",
+    "SAME DIRECTION LEFT TURN": "Left turn (same direction)",
+    "SAME DIRECTION RIGHT TURN": "Right turn (same direction)",
+    "ANGLE MEETS LEFT TURN": "Angle into a left turn",
+    "ANGLE MEETS RIGHT TURN": "Angle into a right turn",
+    "HEAD ON": "Head-on",
+    "ANGLE": "Angle",
+}
+
 _PARTICIPANT_LABELS = {
     "driver": "Drivers",
     "pedestrian": "Pedestrians",
@@ -76,6 +110,13 @@ def _connect() -> duckdb.DuckDBPyConnection:
             f"{db_path} missing - run scripts/build_curated_tables.py --domain {DOMAIN} first."
         )
     return duckdb.connect(str(db_path), read_only=True)
+
+
+def _latest_crash_date(con) -> date:
+    """The end of the data, not today: every window on this endpoint is
+    measured back from the most recent crash the curated tables hold.
+    """
+    return con.execute("SELECT MAX(crash_date) FROM fact_crashes").fetchone()[0]
 
 
 def _subtract_months(d: date, months: int) -> date:
@@ -352,7 +393,7 @@ def get_dashboard_summary(filters: Filters | None = None) -> schemas.DashboardRe
     filters = filters or Filters()
     con = _connect()
     try:
-        latest = con.execute("SELECT MAX(crash_date) FROM fact_crashes").fetchone()[0]
+        latest = _latest_crash_date(con)
         window = _resolve_window(latest, filters.time_range)
 
         metrics = _metrics(con, window, filters)
@@ -364,7 +405,347 @@ def get_dashboard_summary(filters: Filters | None = None) -> schemas.DashboardRe
             road_user_breakdown=_road_user_breakdown(con, window, filters),
             hotspots=hotspots,
             insights=_insights(metrics, hotspots, window),
-            data_as_of=(latest_run_info(DOMAIN) or {}).get("ran_at"),
+            data_as_of=data_as_of(DOMAIN),
+        )
+    finally:
+        con.close()
+
+
+def get_dashboard_trends(filters: Filters | None = None) -> schemas.TrendsResponse:
+    """GET /api/dashboard/trends - the same windowed series the summary
+    endpoint returns, without the KPI/hotspot/insight queries alongside them.
+    """
+    filters = filters or Filters()
+    con = _connect()
+    try:
+        window = _resolve_window(_latest_crash_date(con), filters.time_range)
+        return schemas.TrendsResponse(
+            crash_trend=_crash_trend(con, window, filters),
+            severity_breakdown=_severity_breakdown(con, window, filters),
+            road_user_breakdown=_road_user_breakdown(con, window, filters),
+            data_as_of=data_as_of(DOMAIN),
+        )
+    finally:
+        con.close()
+
+
+# The map groups crashes into geographic cells, not into the reporting
+# agencies the summary endpoint's Area filter uses. An agency covers most of
+# the county, so agency centroids would draw one blob over Montgomery County
+# and call it a hotspot. 0.01 degrees is roughly 1.1 km north-south and 0.9 km
+# east-west at this latitude - about a neighbourhood, which is the scale a
+# resident asking "where are crashes concentrated?" means.
+HOTSPOT_GRID_DEGREES = 0.01
+HOTSPOT_LIMIT = 10
+# Below this a cell is noise, not a hotspot. Narrow filters (one road user and
+# one severity, say) can leave every cell under it, in which case the map
+# honestly shows nothing rather than promoting a single crash to a hotspot.
+HOTSPOT_MIN_CRASHES = 5
+
+_DIRECTION_SUFFIX_RE = re.compile(r"\s*\((?:[NSEW]B|[NSEW]B/[A-Z]|[A-Z]{1,3})\)\s*$")
+# Route and compass tokens that str.title() would otherwise write as "Md 97"
+# or "Nb". Anything not listed keeps its title case.
+_UPPERCASE_ROAD_TOKENS = frozenset({"md", "us", "i", "sr", "nb", "sb", "eb", "wb", "sw", "se", "ne", "nw"})
+
+
+def _clean_road_label(name: str | None) -> str | None:
+    """Public wording for a raw road name from the crash records.
+
+    Upstream values are all-caps and often carry a direction/lane suffix, and
+    a few repeat the road name twice ("GEORGIA AVE GEORGIA AVE (SB/L)") where
+    the source concatenated two fields. None of that belongs on a public map
+    label; the underlying value is unchanged in the data.
+    """
+    if not name:
+        return None
+    cleaned = _DIRECTION_SUFFIX_RE.sub("", name.strip())
+    words = cleaned.split()
+    half = len(words) // 2
+    if half and words[:half] == words[half:]:
+        words = words[:half]
+    titled = [
+        word.upper() if word.lower() in _UPPERCASE_ROAD_TOKENS else word.title()
+        for word in words
+    ]
+    return " ".join(titled) or None
+
+
+def _cell_hotspots(con, window: Window, filters: Filters) -> list[schemas.Hotspot]:
+    """Top geographic crash clusters in the window, with their real centroid.
+
+    The coordinates returned are the mean of the crashes in the cell, not the
+    cell's corner, so a marker sits where the crashes actually are. Rows with
+    no coordinates are excluded - 0.07% of the table, and a crash with no
+    location cannot be placed on a map.
+
+    Each cell is labelled with its two most common road names, because a long
+    corridor produces several separate hotspots: three cells on Georgia Ave
+    are three different places, and "Georgia Ave" three times in a ranked list
+    tells a reader nothing about which one is near them.
+    """
+    clauses, params = _crash_filter_clauses(filters)
+    window_clauses, window_params = _window_clauses(window)
+    where = " AND ".join(
+        clauses + window_clauses + ["latitude IS NOT NULL", "longitude IS NOT NULL"]
+    )
+    grid = HOTSPOT_GRID_DEGREES
+
+    rows = con.execute(f"""
+        WITH located AS (
+            SELECT
+                CAST(latitude / ? AS BIGINT) AS lat_cell,
+                CAST(longitude / ? AS BIGINT) AS lon_cell,
+                latitude, longitude, road_name
+            FROM fact_crashes WHERE {where}
+        ), cells AS (
+            SELECT lat_cell, lon_cell, COUNT(*) AS crash_count,
+                   AVG(latitude) AS latitude, AVG(longitude) AS longitude
+            FROM located GROUP BY 1, 2
+            HAVING COUNT(*) >= ? ORDER BY crash_count DESC LIMIT ?
+        ), roads AS (
+            SELECT lat_cell, lon_cell, road_name,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY lat_cell, lon_cell ORDER BY COUNT(*) DESC, road_name
+                   ) AS road_rank
+            FROM located WHERE road_name IS NOT NULL GROUP BY 1, 2, 3
+        )
+        SELECT c.lat_cell, c.lon_cell, c.crash_count, c.latitude, c.longitude,
+               first_road.road_name, second_road.road_name
+        FROM cells c
+        LEFT JOIN roads first_road
+               ON (first_road.lat_cell, first_road.lon_cell, first_road.road_rank)
+                = (c.lat_cell, c.lon_cell, 1)
+        LEFT JOIN roads second_road
+               ON (second_road.lat_cell, second_road.lon_cell, second_road.road_rank)
+                = (c.lat_cell, c.lon_cell, 2)
+        ORDER BY c.crash_count DESC
+    """, [grid, grid] + params + window_params + [HOTSPOT_MIN_CRASHES, HOTSPOT_LIMIT]).fetchall()
+
+    if not rows:
+        return []
+
+    prior_counts: dict[tuple[int, int], int] = {}
+    if window.prior_start is not None:
+        prior_clauses, prior_params = _window_clauses(
+            window, start=window.prior_start, end=window.prior_end
+        )
+        prior_where = " AND ".join(
+            clauses + prior_clauses + ["latitude IS NOT NULL", "longitude IS NOT NULL"]
+        )
+        prior_counts = {
+            (lat_cell, lon_cell): count
+            for lat_cell, lon_cell, count in con.execute(f"""
+                SELECT CAST(latitude / ? AS BIGINT), CAST(longitude / ? AS BIGINT), COUNT(*)
+                FROM fact_crashes WHERE {prior_where} GROUP BY 1, 2
+            """, [grid, grid] + params + prior_params).fetchall()
+        }
+
+    max_count = rows[0][2]
+    hotspots = []
+    for lat_cell, lon_cell, count, latitude, longitude, first_road, second_road in rows:
+        prior = prior_counts.get((lat_cell, lon_cell))
+        hotspots.append(schemas.Hotspot(
+            id=f"{lat_cell}_{lon_cell}",
+            area=_cell_label(first_road, second_road, latitude, longitude),
+            latitude=latitude,
+            longitude=longitude,
+            crash_count=count,
+            trend=round(percent_change(prior, count), 1) if prior else 0.0,
+            intensity=round(count / max_count, 3),
+        ))
+    return hotspots
+
+
+def _cell_label(first_road: str | None, second_road: str | None, latitude: float, longitude: float) -> str:
+    """A place name for one cell: its main road, and the next road along.
+
+    "near" rather than "&" on purpose - the two roads are the most common in a
+    half-mile cell, which does not mean they intersect. Falls back to
+    coordinates when the cell's crashes have no road name at all.
+    """
+    primary = _clean_road_label(first_road)
+    secondary = _clean_road_label(second_road)
+    if not primary:
+        return f"{latitude:.3f}, {longitude:.3f}"
+    if secondary and secondary != primary:
+        return f"{primary} near {secondary}"
+    return primary
+
+
+def _ranked_areas(hotspots: list[schemas.Hotspot]) -> list[schemas.RankedArea]:
+    """Hotspots come back ordered by crash count, so the rank is their position."""
+    return [
+        schemas.RankedArea(rank=i + 1, name=h.area, crash_count=h.crash_count, trend=h.trend)
+        for i, h in enumerate(hotspots)
+    ]
+
+
+def _common_collision_type(con, window: Window, filters: Filters) -> tuple[str, float] | None:
+    """The most frequent collision type in the window, and its share of all
+    crashes in that window.
+
+    'OTHER' and NULL are excluded from the ranking: both are catch-all
+    buckets rather than a kind of crash, and naming one "the most common
+    crash type" would tell the reader nothing. The share is still measured
+    against every crash in the window, so the percentage is not inflated by
+    dropping them.
+    """
+    clauses, params = _crash_filter_clauses(filters)
+    window_clauses, window_params = _window_clauses(window)
+    clauses += window_clauses
+    params += window_params
+    where = " AND ".join(clauses) if clauses else "TRUE"
+
+    total = con.execute(f"SELECT COUNT(*) FROM fact_crashes WHERE {where}", params).fetchone()[0]
+    if not total:
+        return None
+
+    row = con.execute(f"""
+        SELECT collision_type, COUNT(*) FROM fact_crashes
+        WHERE {where} AND collision_type IS NOT NULL AND collision_type <> 'OTHER'
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+    """, params).fetchone()
+    if row is None:
+        return None
+
+    collision_type, count = row
+    label = _COLLISION_LABELS.get(collision_type, collision_type.title())
+    return label, round(count / total * 100, 1)
+
+
+def _summary_cards(
+    con, window: Window, filters: Filters, hotspots: list[schemas.Hotspot]
+) -> list[schemas.HotspotSummaryCard]:
+    """Three headline facts about the current window, each computed - a card
+    with no supporting data is left out rather than filled with a guess.
+    """
+    cards: list[schemas.HotspotSummaryCard] = []
+
+    if hotspots:
+        top = hotspots[0]
+        cards.append(schemas.HotspotSummaryCard(
+            label="Most affected location",
+            # No "share of all county crashes" here: these are the top cells,
+            # not a partition of the county, so a percentage taken across them
+            # would describe the cells rather than the county.
+            primary_text=top.area,
+            secondary_text=f"{top.crash_count:,} crashes over {window.label}, within about a half-mile area",
+        ))
+
+        fastest = max(hotspots, key=lambda h: h.trend)
+        if fastest.trend > 0 and window.comparison_label:
+            cards.append(schemas.HotspotSummaryCard(
+                label="Fastest increase",
+                primary_text=fastest.area,
+                secondary_text=f"up {fastest.trend}% vs. {window.comparison_label}",
+            ))
+
+    common = _common_collision_type(con, window, filters)
+    if common:
+        label, share = common
+        cards.append(schemas.HotspotSummaryCard(
+            label="Most common crash type",
+            primary_text=label,
+            secondary_text=f"{share}% of all crashes over {window.label}",
+        ))
+
+    return cards
+
+
+# The question the "what the county is focusing on" panel asks of the report
+# index. A constant, not model-chosen, so the panel is reproducible.
+COUNTY_FOCUS_QUERY = (
+    "Montgomery County Vision Zero priority actions and focus areas for reducing "
+    "crashes on high injury roads"
+)
+COUNTY_FOCUS_LIMIT = 3
+# Below this cosine similarity a passage is not really about the question, and
+# showing it would put unrelated report text under a confident heading.
+COUNTY_FOCUS_MIN_SIMILARITY = 0.45
+_FOCUS_EXCERPT_CHARS = 260
+
+
+# Bullet glyphs these county PDFs use, as they survive text extraction: a
+# guillemet, a bullet, a middle dot, dashes, and the replacement character a
+# symbol-font bullet decays into.
+_BULLET_CHARS = " \t-\u00b7\u00bb\u2013\u2014\u2022\u2023\u25aa\u25cf\ufffd"
+
+
+def _clean_quoted_line(line: str) -> str:
+    """One line of report text, safe to quote on a public page.
+
+    Strips the bullet glyph a line starts or ends with and normalizes runs of
+    whitespace. Done here, where text is quoted, rather than edited into the
+    stored chunks - the chunk keeps exactly what was extracted, so what the
+    agent searches is unchanged.
+    """
+    return " ".join(line.split()).strip(_BULLET_CHARS)
+
+
+def _focus_item(hit: dict) -> schemas.CountyFocusItem:
+    """Split one retrieved chunk into a heading plus a short excerpt.
+
+    Chunks are contextualized with their section headings during chunking, so
+    the first line is a real heading from the document, not something written
+    here.
+    """
+    lines = [
+        cleaned for cleaned in (_clean_quoted_line(line) for line in hit["text"].splitlines())
+        if cleaned
+    ]
+    title = lines[0] if lines else (hit.get("section") or "County report passage")
+    body = " ".join(lines[1:]) or title
+    if len(body) > _FOCUS_EXCERPT_CHARS:
+        body = body[:_FOCUS_EXCERPT_CHARS].rsplit(" ", 1)[0] + "..."
+    return schemas.CountyFocusItem(
+        title=title,
+        excerpt=body,
+        document_title=hit.get("document_title"),
+        page=hit.get("page"),
+        url=hit.get("source_url"),
+    )
+
+
+@lru_cache(maxsize=1)
+def _county_focus() -> tuple[schemas.CountyFocusItem, ...]:
+    """Report passages on the county's stated priorities.
+
+    Cached for the life of the process: the query is a constant and the
+    report index is a static build artifact, so this can only produce one
+    answer - and caching it means the ONNX query encoder is loaded at most
+    once for everyone browsing the map, instead of per request.
+
+    ponytail: an in-process cache with no invalidation, which is correct only
+    because the index ships baked into the image. If the index ever becomes
+    reloadable at runtime, this needs to be cleared when it reloads.
+    """
+    try:
+        hits = search_reports(COUNTY_FOCUS_QUERY, top_k=COUNTY_FOCUS_LIMIT, domain=DOMAIN)
+    except FileNotFoundError:
+        # No report index in this deployment - the panel is simply absent,
+        # which is honest; the rest of the map does not depend on it.
+        return ()
+    return tuple(
+        _focus_item(hit) for hit in hits
+        if hit["similarity_score"] >= COUNTY_FOCUS_MIN_SIMILARITY
+    )
+
+
+def get_dashboard_map(filters: Filters | None = None) -> schemas.MapResponse:
+    """GET /api/dashboard/map - crash geography plus the ranked areas,
+    headline facts, and county-report context the Hotspots screen shows.
+    """
+    filters = filters or Filters()
+    con = _connect()
+    try:
+        window = _resolve_window(_latest_crash_date(con), filters.time_range)
+        hotspots = _cell_hotspots(con, window, filters)
+        return schemas.MapResponse(
+            hotspots=hotspots,
+            ranked_areas=_ranked_areas(hotspots),
+            summary_cards=_summary_cards(con, window, filters, hotspots),
+            county_focus=list(_county_focus()),
+            data_as_of=data_as_of(DOMAIN),
         )
     finally:
         con.close()

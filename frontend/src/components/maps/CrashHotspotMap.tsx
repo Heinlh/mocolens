@@ -1,12 +1,16 @@
 import { useState } from 'react'
 import type { Hotspot } from '@/types/analytics'
-import type { ReferenceLocation } from '@/data/mock/crashes'
+import type { ReferenceLocation } from '@/constants/referenceLocations'
 import { projectToMapPoint } from './mapProjection'
 
 interface CrashHotspotMapProps {
   hotspots: Hotspot[]
   referenceLocations?: ReferenceLocation[]
   onSelectHotspot?: (hotspot: Hotspot) => void
+  /** Number the markers by rank instead of printing each hotspot's name.
+   * Only for a caller that shows the matching ranked list beside the map -
+   * a number with nothing to read it against says less than a name. */
+  numberedMarkers?: boolean
   showLegend?: boolean
   legendCaption?: string
   height?: number
@@ -42,12 +46,25 @@ export function CrashHotspotMap({
   hotspots,
   referenceLocations = [],
   onSelectHotspot,
+  numberedMarkers = false,
   showLegend = true,
   legendCaption,
   height = 420,
 }: CrashHotspotMapProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const hotspotPoints = hotspots.map((h) => ({ hotspot: h, ...projectToMapPoint(h.latitude, h.longitude) }))
+  const hotspotPoints = hotspots.map((h, index) => ({
+    hotspot: h,
+    rank: index + 1,
+    ...projectToMapPoint(h.latitude, h.longitude),
+  }))
+  // Painted smallest first so the largest markers - the ones the page is
+  // about - are never buried under a neighbouring cluster's marker.
+  const drawOrder = [...hotspotPoints].sort((a, b) => a.hotspot.crashCount - b.hotspot.crashCount)
+  // Ten real hotspots sit inside the county's inner corridors, far closer
+  // together than the handful the dashboard's by-agency map shows. Markers
+  // sized for five of them merge into one blob at ten, so they shrink as the
+  // set grows.
+  const markerScale = hotspotPoints.length > 6 ? 0.6 : 1
   // Alternate label side in geographic (not array) order, so markers that
   // are actually close together on screen end up on opposite sides.
   const labelBelowById = new Map(
@@ -89,8 +106,8 @@ export function CrashHotspotMap({
             )
           })}
 
-          {hotspotPoints.map(({ hotspot, x, y }) => {
-            const radius = 2.5 + hotspot.intensity * 4
+          {drawOrder.map(({ hotspot, rank, x, y }) => {
+            const radius = (2.5 + hotspot.intensity * 4) * markerScale
             const color = intensityColor(hotspot.intensity)
             const isHovered = hoveredId === hotspot.id
             const trendLabel = `${hotspot.trend >= 0 ? '+' : ''}${hotspot.trend}%`
@@ -114,7 +131,7 @@ export function CrashHotspotMap({
                 }}
                 className="cursor-pointer outline-none"
               >
-                <circle cx={x} cy={y} r={radius * 1.8} fill={color} opacity={0.18} />
+                <circle cx={x} cy={y} r={radius * 1.35} fill={color} opacity={0.18} />
                 <circle
                   cx={x}
                   cy={y}
@@ -124,12 +141,26 @@ export function CrashHotspotMap({
                   stroke={isHovered ? 'var(--color-text)' : 'none'}
                   strokeWidth={0.4}
                 />
-                <text x={x} y={labelY} textAnchor="middle" fontSize={2.6} fontWeight={600} fill="var(--color-text)">
-                  {hotspot.area}
-                </text>
+                {numberedMarkers ? (
+                  <text
+                    x={x}
+                    y={y + 1}
+                    textAnchor="middle"
+                    fontSize={2.6}
+                    fontWeight={700}
+                    fill="var(--color-bg)"
+                    pointerEvents="none"
+                  >
+                    {rank}
+                  </text>
+                ) : (
+                  <text x={x} y={labelY} textAnchor="middle" fontSize={2.6} fontWeight={600} fill="var(--color-text)">
+                    {hotspot.area}
+                  </text>
+                )}
                 {isHovered && (
                   <text x={x} y={hoverLabelY} textAnchor="middle" fontSize={2.4} fill="var(--color-text-muted)">
-                    {hotspot.crashCount} crashes · {trendLabel}
+                    {numberedMarkers ? `${hotspot.area} - ` : ''}{hotspot.crashCount} crashes · {trendLabel}
                   </text>
                 )}
               </g>

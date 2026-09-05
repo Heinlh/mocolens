@@ -77,10 +77,26 @@ export interface HotspotSummaryCard {
   secondaryText: string
 }
 
+/** One passage retrieved from a county report, with the provenance needed to
+ * link back to it. The backend derives these from the searchable report
+ * index, so the panel quotes what county documents actually say.
+ */
+export interface CountyFocusItem {
+  title: string
+  excerpt: string
+  documentTitle?: string
+  page?: string
+  url?: string
+}
+
+/** GET /api/dashboard/map. Hotspots here are geographic cells of roughly half
+ * a mile, labelled by their main road - not the reporting agencies the
+ * summary endpoint's Area filter groups by.
+ */
 export interface HotspotsResponse {
   hotspots: Hotspot[]
   rankedAreas: RankedArea[]
   summaryCards: HotspotSummaryCard[]
-  countyFocusAreas: string[]
+  countyFocus: CountyFocusItem[]
   dataAsOf?: string
 }

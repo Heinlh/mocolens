@@ -1,7 +1,16 @@
 """Orchestrates document processing for one domain: parse -> chunk -> embed -> index.
 
 Runs after the extract layer (ingestion/) has populated data/raw/documents/<domain>/.
-Skips PDFs already chunked unless force=True (idempotent reruns).
+
+Change detection (§8.3, §24): a document is reprocessed only when the content
+hash the manifest recorded for its latest download differs from the hash it
+was last processed at, tracked in processed.json. "Already chunked" is not a
+sufficient test on its own - a county report republished at the same URL
+leaves a chunk file on disk that no longer matches the PDF beside it, and
+skipping on file existence alone would keep the superseded text searchable
+indefinitely. A document with no processed.json entry is reprocessed, so a
+tree that predates this state file repairs itself on the next run rather than
+assuming its chunks are current.
 
 Each document is processed in its own subprocess (see the __main__ entry
 point below). Docling's layout/table models plus the Granite embedding
@@ -15,12 +24,37 @@ slate.
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ingestion.documents import manifest as doc_manifest
 
 DATA_DIR = Path("data")
 FAILURE_LOG = Path("logs/ingestion/processing_failures.jsonl")
+STATE_FILE = "processed.json"
+
+
+def _domain_dir(domain: str) -> Path:
+    return DATA_DIR / "processed" / "documents" / domain
+
+
+def load_state(domain: str) -> dict[str, dict]:
+    """What each document was last processed from: {document_id: {content_hash, ...}}."""
+    path = _domain_dir(domain) / STATE_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        # Unreadable state means "nothing is known to be current", which
+        # reprocesses everything - slow, but correct and self-repairing.
+        return {}
+
+
+def save_state(domain: str, state: dict[str, dict]) -> None:
+    path = _domain_dir(domain) / STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _guess_title(filename: str) -> str:
@@ -32,8 +66,8 @@ def _process_single_document(domain: str, doc_id: str, record: dict) -> None:
     from . import chunker, pdf_parser
     from ..storage import vector_store
 
-    parsed_dir = DATA_DIR / "processed" / "documents" / domain / "parsed"
-    chunks_dir = DATA_DIR / "processed" / "documents" / domain / "chunks"
+    parsed_dir = _domain_dir(domain) / "parsed"
+    chunks_dir = _domain_dir(domain) / "chunks"
     parsed_dir.mkdir(parents=True, exist_ok=True)
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
@@ -54,25 +88,50 @@ def _process_single_document(domain: str, doc_id: str, record: dict) -> None:
         "\n".join(json.dumps(c) for c in doc_chunks) + ("\n" if doc_chunks else ""),
         encoding="utf-8",
     )
-    vector_store.upsert_chunks(domain, doc_chunks)
+    # replace_document, not an append: this document's previous chunks have to
+    # leave the index, or a shortened revision keeps its old tail searchable.
+    vector_store.replace_document(domain, doc_id, doc_chunks)
+
+
+def _is_current(record: dict, processed: dict | None, chunks_path: Path) -> bool:
+    """True if this document's chunks were built from the file now on disk."""
+    if processed is None or not chunks_path.exists():
+        return False
+    return processed.get("content_hash") == record.get("content_hash")
+
+
+def _log_failure(domain: str, doc_id: str, local_path: Path, result) -> None:
+    FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with FAILURE_LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "domain": domain,
+            "document_id": doc_id,
+            "local_path": str(local_path),
+            "returncode": result.returncode,
+            "stderr_tail": result.stderr[-4000:],
+        }) + "\n")
 
 
 def process_domain(domain: str, force: bool = False) -> dict:
-    """Parse, chunk, and index every downloaded PDF for a domain."""
+    """Parse, chunk, and index every new or changed downloaded PDF for a domain.
+
+    `force` reprocesses every document regardless of change detection.
+    """
     manifest_path = DATA_DIR / "raw" / "documents" / domain / "manifest.jsonl"
     records = doc_manifest.load(manifest_path)
-    chunks_dir = DATA_DIR / "processed" / "documents" / domain / "chunks"
+    chunks_dir = _domain_dir(domain) / "chunks"
+    state = load_state(domain)
 
     stats = {"documents_processed": 0, "documents_skipped": 0, "documents_failed": 0, "chunks_created": 0}
 
     for doc_id, record in records.items():
-        chunks_path = chunks_dir / f"{doc_id}.jsonl"
-        if chunks_path.exists() and not force:
+        local_path = Path(record["local_path"])
+        if not local_path.exists():
             stats["documents_skipped"] += 1
             continue
 
-        local_path = Path(record["local_path"])
-        if not local_path.exists():
+        chunks_path = chunks_dir / f"{doc_id}.jsonl"
+        if not force and _is_current(record, state.get(doc_id), chunks_path):
             stats["documents_skipped"] += 1
             continue
 
@@ -83,20 +142,21 @@ def process_domain(domain: str, force: bool = False) -> dict:
         )
 
         if result.returncode == 0 and chunks_path.exists():
-            stats["documents_processed"] += 1
             with chunks_path.open(encoding="utf-8") as f:
-                stats["chunks_created"] += sum(1 for _ in f)
+                chunk_count = sum(1 for _ in f)
+            stats["documents_processed"] += 1
+            stats["chunks_created"] += chunk_count
+            state[doc_id] = {
+                "content_hash": record.get("content_hash"),
+                "chunk_count": chunk_count,
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            # Saved per document, not once at the end: a run killed partway
+            # through must not redo the documents it already finished.
+            save_state(domain, state)
         else:
             stats["documents_failed"] += 1
-            FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with FAILURE_LOG.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "domain": domain,
-                    "document_id": doc_id,
-                    "local_path": str(local_path),
-                    "returncode": result.returncode,
-                    "stderr_tail": result.stderr[-4000:],
-                }) + "\n")
+            _log_failure(domain, doc_id, local_path, result)
 
     return stats
 

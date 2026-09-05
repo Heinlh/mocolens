@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, Bike, Car, PersonStanding, RefreshCw, ShieldAlert } from 'lucide-react'
+import { Bike, Car, PersonStanding, RefreshCw, ShieldAlert } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { TopModeToggle } from '@/components/layout/TopModeToggle'
+import { PageStatus } from '@/components/layout/PageStatus'
+import { describeLoadError } from '@/lib/backendFetch'
 import { Card } from '@/components/common/Card'
 import { MetricCard } from '@/components/common/MetricCard'
 import { InfoTooltip } from '@/components/common/InfoTooltip'
@@ -11,9 +13,8 @@ import { CrashTrendChart } from '@/components/charts/CrashTrendChart'
 import { SeverityBarChart } from '@/components/charts/SeverityBarChart'
 import { RoadUserDonutChart } from '@/components/charts/RoadUserDonutChart'
 import { CrashHotspotMap } from '@/components/maps/CrashHotspotMap'
-import { mockReferenceLocations } from '@/data/mock/crashes'
+import { COUNTY_REFERENCE_LOCATIONS } from '@/constants/referenceLocations'
 import { getDashboardOverview } from '@/services/analyticsService'
-import { BackendError } from '@/lib/backendFetch'
 import type { DashboardFilters, DashboardResponse } from '@/types/analytics'
 import { formatDate } from '@/lib/format'
 
@@ -25,13 +26,6 @@ const DEFAULT_FILTERS: DashboardFilters = { timeRange: 'Last 12 months', area: '
 const TIME_RANGES = ['Last 12 months', 'Last 6 months', 'Year to date', 'All time']
 const ROAD_USERS = ['All road users', 'Pedestrians', 'Cyclists', 'Drivers']
 const SEVERITIES = ['All severity levels', 'Property damage only', 'Injury', 'Serious injury', 'Fatal']
-
-function describeError(err: unknown): string {
-  if (err instanceof BackendError && err.status === 429) {
-    return 'Too many requests right now. Please wait a moment and try again.'
-  }
-  return 'Something went wrong loading the dashboard. Please try again in a moment.'
-}
 
 interface FilterSelectProps {
   label: string
@@ -77,7 +71,7 @@ export function DashboardPage() {
         }
       },
       (err) => {
-        if (isCurrent) setError(describeError(err))
+        if (isCurrent) setError(describeLoadError(err, 'The dashboard'))
       },
     )
     return () => {
@@ -96,30 +90,8 @@ export function DashboardPage() {
     return data.hotspots.filter((h) => h.area === filters.area)
   }, [data, filters.area])
 
-  if (error) {
-    return (
-      <div className="min-h-screen">
-        <PageHeader centerSlot={<TopModeToggle />} />
-        <div className="px-4 py-10 md:px-8">
-          <Card className="flex items-start gap-3">
-            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-danger/15 text-danger">
-              <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-            </span>
-            <p className="text-sm text-text">{error}</p>
-          </Card>
-        </div>
-      </div>
-    )
-  }
-
-  if (!data) {
-    return (
-      <div className="min-h-screen">
-        <PageHeader centerSlot={<TopModeToggle />} />
-        <p className="px-8 py-10 text-sm text-text-muted">Loading dashboard...</p>
-      </div>
-    )
-  }
+  if (error) return <PageStatus message={error} tone="error" />
+  if (!data) return <PageStatus message="Loading dashboard..." />
 
   return (
     <div className="min-h-screen">
@@ -208,7 +180,7 @@ export function DashboardPage() {
             <div className="mt-2">
               <CrashHotspotMap
                 hotspots={visibleHotspots}
-                referenceLocations={mockReferenceLocations}
+                referenceLocations={COUNTY_REFERENCE_LOCATIONS}
                 onSelectHotspot={() => navigate('/dashboard/hotspots')}
               />
             </div>

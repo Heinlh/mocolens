@@ -38,6 +38,30 @@ def query_analytics(question: str, sql: str, reason: str) -> dict:
         'unknown_non_motorist'], injury_severity, at_fault)
       dim_date(date, year, quarter, month, day_of_week)
 
+    Data notes that change what a correct query looks like:
+      - There is no municipality, neighborhood, or community column.
+        agency_name is the reporting police agency (five values, the large
+        majority "Montgomery County Police"), so it is a weak stand-in for
+        "area"; road_name plus latitude/longitude is the usable geography.
+      - Crash counts have no traffic-volume denominator. Most roads in the
+        table carry only one or two recorded crashes because they are short
+        or lightly travelled, not because they are safe - never read a low
+        count as low risk.
+      - road_name is NULL on roughly a quarter of rows. Any ranking of
+        roads must exclude it (WHERE road_name IS NOT NULL), or the null
+        group outranks every real road by an order of magnitude.
+      - road_name holds the raw police-feed string: UPPERCASE and
+        abbreviated ("GEORGIA AVE", never "Georgia Avenue"), with RD, DR,
+        AVE, ST, LA, BLVD, PKWY and HWY as the common endings, and many
+        rows carrying a direction, ramp, or second street on the end
+        ("GEORGIA AVE (SB/L)", "CONNECTICUT AVE GEORGIA AVE"). So never
+        match a road with = or a spelled-out name - that silently returns
+        zero rows and looks like "no crashes here". Match the distinctive
+        word only, with ILIKE '%GEORGIA%', which also gathers the ramp and
+        intersection variants of the same road.
+      - Coverage starts in 2015 and the most recent year is partial, so a
+        year-over-year comparison that includes it will understate it.
+
     `question` states what you're trying to find out and `reason` explains
     why this query answers it - both are logged for audit, not optional
     filler. Results are capped and the query is validated before running;
@@ -54,8 +78,9 @@ def search_reports(query: str, top_k: int = 5, year_at_least: int | None = None)
     for citations, never invent a source. `year_at_least` optionally
     filters to reports published in or after that year.
     """
-    filters = {"year": {"$gte": year_at_least}} if year_at_least else None
-    return _safe(report_tool.search_reports, query=query, filters=filters, top_k=top_k)
+    return _safe(
+        report_tool.search_reports, query=query, top_k=top_k, year_at_least=year_at_least,
+    )
 
 
 @tool

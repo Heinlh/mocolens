@@ -5,23 +5,22 @@ required for citations").
 """
 from ..storage import vector_store
 
-# Metadata fields a caller may filter on. Anything else is dropped rather
-# than passed through - Chroma raises on a filter field that was never
-# indexed, and a dropped filter is a much better failure mode for an
-# agent tool than a stack trace.
-_ALLOWED_FILTER_FIELDS = {"year", "domain", "section"}
 
-
-def search_reports(query: str, filters: dict | None = None, top_k: int = 5, *, domain: str = "vision_zero") -> list[dict]:
+def search_reports(
+    query: str,
+    top_k: int = 5,
+    year_at_least: int | None = None,
+    *,
+    domain: str = "vision_zero",
+) -> list[dict]:
     """Semantic search over one domain's document chunks (§14.2).
 
-    `filters` values are forwarded to Chroma as-is per field, so both plain
-    equality ({"year": 2025}) and Chroma operator filters
-    ({"year": {"$gte": 2023}}) work, matching the doc's own example
-    ("year >= 2023").
+    `year_at_least` keeps only chunks from reports published in or after
+    that year, matching the doc's own example ("year >= 2023"). It is the
+    only filter anything ever asked for; the store previously accepted a
+    pass-through filter dict shaped for Chroma's query language, which
+    nothing outside that store had a reason to know about.
     """
-    where = _build_where(filters)
-    hits = vector_store.search(domain, query, top_k=top_k, where=where)
     return [
         {
             "text": h["text"],
@@ -32,7 +31,7 @@ def search_reports(query: str, filters: dict | None = None, top_k: int = 5, *, d
             "similarity_score": round(h["similarity"], 4),
             "section": h.get("section"),
         }
-        for h in hits
+        for h in vector_store.search(domain, query, top_k=top_k, year_at_least=year_at_least)
     ]
 
 
@@ -42,14 +41,3 @@ def _format_page(start, end) -> str | None:
     if end is None or end == start:
         return str(int(start))
     return f"{int(start)}-{int(end)}"
-
-
-def _build_where(filters: dict | None) -> dict | None:
-    if not filters:
-        return None
-    where = {k: v for k, v in filters.items() if k in _ALLOWED_FILTER_FIELDS}
-    if not where:
-        return None
-    if len(where) == 1:
-        return where
-    return {"$and": [{k: v} for k, v in where.items()]}

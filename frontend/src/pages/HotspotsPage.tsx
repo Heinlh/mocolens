@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowDown, ArrowUp, Car, CheckCircle2, Info, MapPin, TrendingUp } from 'lucide-react'
+import { ArrowDown, ArrowUp, Car, CheckCircle2, ExternalLink, Info, MapPin, TrendingUp } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { TopModeToggle } from '@/components/layout/TopModeToggle'
+import { PageStatus } from '@/components/layout/PageStatus'
+import { describeLoadError } from '@/lib/backendFetch'
 import { Card } from '@/components/common/Card'
+import { EmptyState } from '@/components/common/EmptyState'
 import { PromptChip } from '@/components/common/PromptChip'
 import { CrashHotspotMap } from '@/components/maps/CrashHotspotMap'
-import { mockReferenceLocations } from '@/data/mock/crashes'
+import { COUNTY_REFERENCE_LOCATIONS } from '@/constants/referenceLocations'
 import { getHotspots } from '@/services/analyticsService'
 import { HOTSPOTS_SUGGESTED_PROMPTS } from '@/constants/prompts'
 import type { HotspotsResponse } from '@/types/analytics'
@@ -18,23 +21,31 @@ const SUMMARY_ICONS = [MapPin, TrendingUp, Car]
 export function HotspotsPage() {
   const navigate = useNavigate()
   const [data, setData] = useState<HotspotsResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    getHotspots().then(setData)
+    let isCurrent = true
+    getHotspots().then(
+      (result) => {
+        if (isCurrent) setData(result)
+      },
+      (err) => {
+        if (isCurrent) setError(describeLoadError(err, 'Crash hotspots'))
+      },
+    )
+    return () => {
+      isCurrent = false
+    }
   }, [])
 
   function handlePromptClick(prompt: string) {
     navigate(buildAskResultPath(prompt))
   }
 
-  if (!data) {
-    return (
-      <div className="min-h-screen">
-        <PageHeader centerSlot={<TopModeToggle />} />
-        <p className="px-8 py-10 text-sm text-text-muted">Loading hotspots...</p>
-      </div>
-    )
-  }
+  if (error) return <PageStatus message={error} tone="error" />
+  if (!data) return <PageStatus message="Loading hotspots..." />
+
+  const hasHotspots = data.hotspots.length > 0
 
   return (
     <div className="min-h-screen">
@@ -47,16 +58,28 @@ export function HotspotsPage() {
       <div className="flex flex-col gap-6 px-4 py-6 md:px-8">
         <div className="grid gap-5 lg:grid-cols-3">
           <Card className="lg:col-span-2">
-            <CrashHotspotMap
-              hotspots={data.hotspots}
-              referenceLocations={mockReferenceLocations}
-              height={440}
-              legendCaption={`Data from ${formatDate(data.dataAsOf)}`}
-            />
+            {hasHotspots ? (
+              <CrashHotspotMap
+                hotspots={data.hotspots}
+                referenceLocations={COUNTY_REFERENCE_LOCATIONS}
+                numberedMarkers
+                height={440}
+                legendCaption={`Data as of ${formatDate(data.dataAsOf)}`}
+              />
+            ) : (
+              <EmptyState
+                icon={MapPin}
+                title="Not enough crashes to map"
+                description="No location in the county reached the threshold for a hotspot over this period."
+              />
+            )}
           </Card>
 
           <Card>
-            <h3 className="text-sm font-semibold">Areas with the most crashes</h3>
+            <h3 className="text-sm font-semibold">Locations with the most crashes</h3>
+            <p className="mt-0.5 text-xs text-text-muted">
+              Each location covers about half a mile, named for its main road.
+            </p>
             <ul className="mt-3 flex flex-col gap-1">
               {data.rankedAreas.map((area) => {
                 const isWorsening = area.trend > 0
@@ -70,11 +93,13 @@ export function HotspotsPage() {
                       <span className="text-sm font-medium text-text">{area.name}</span>
                     </span>
                     <span className="flex items-center gap-3 text-sm">
-                      <span className="text-text-muted">{area.crashCount.toLocaleString()} crashes</span>
-                      <span className={`flex items-center gap-0.5 font-medium ${isWorsening ? 'text-danger' : 'text-positive'}`}>
-                        <TrendIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                        {Math.abs(area.trend)}%
-                      </span>
+                      <span className="whitespace-nowrap text-text-muted">{area.crashCount.toLocaleString()} crashes</span>
+                      {area.trend === 0 ? null : (
+                        <span className={`flex items-center gap-0.5 font-medium ${isWorsening ? 'text-danger' : 'text-positive'}`}>
+                          <TrendIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                          {Math.abs(area.trend)}%
+                        </span>
+                      )}
                     </span>
                   </li>
                 )
@@ -83,23 +108,25 @@ export function HotspotsPage() {
           </Card>
         </div>
 
-        <div className="grid gap-5 md:grid-cols-3">
-          {data.summaryCards.map((card, index) => {
-            const Icon = SUMMARY_ICONS[index] ?? MapPin
-            return (
-              <Card key={card.label} className="flex flex-col gap-1">
-                <div className="flex items-center gap-1.5 text-text-muted">
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                  <span className="text-xs font-medium">{card.label}</span>
-                </div>
-                <p className="text-xl font-bold text-text">{card.primaryText}</p>
-                <p className="text-sm text-text-muted">{card.secondaryText}</p>
-              </Card>
-            )
-          })}
-        </div>
+        {data.summaryCards.length > 0 ? (
+          <div className="grid gap-5 md:grid-cols-3">
+            {data.summaryCards.map((card, index) => {
+              const Icon = SUMMARY_ICONS[index] ?? MapPin
+              return (
+                <Card key={card.label} className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 text-text-muted">
+                    <Icon className="h-4 w-4" aria-hidden="true" />
+                    <span className="text-xs font-medium">{card.label}</span>
+                  </div>
+                  <p className="text-xl font-bold text-text">{card.primaryText}</p>
+                  <p className="text-sm text-text-muted">{card.secondaryText}</p>
+                </Card>
+              )
+            })}
+          </div>
+        ) : null}
 
-        <div className="grid gap-5 md:grid-cols-2">
+        <div className="grid items-start gap-5 md:grid-cols-2">
           <Card className="flex flex-col gap-2">
             <div className="flex items-center gap-2 text-text-muted">
               <Info className="h-4 w-4" aria-hidden="true" />
@@ -111,20 +138,36 @@ export function HotspotsPage() {
             </p>
           </Card>
 
-          <Card className="flex flex-col gap-2">
-            <div className="flex items-center gap-2 text-text-muted">
-              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-              <h3 className="text-sm font-semibold">What the county is focusing on</h3>
-            </div>
-            <ul className="flex flex-col gap-1.5 text-sm text-text-muted">
-              {data.countyFocusAreas.map((item) => (
-                <li key={item} className="flex items-start gap-2">
-                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-positive" aria-hidden="true" />
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </Card>
+          {/* Quoted from county reports rather than written here, so the
+              panel says what the county said, with a link to check it. */}
+          {data.countyFocus.length > 0 ? (
+            <Card className="flex flex-col gap-3">
+              <div className="flex items-center gap-2 text-text-muted">
+                <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                <h3 className="text-sm font-semibold">What county reports say the county is focusing on</h3>
+              </div>
+              <ul className="flex flex-col gap-3">
+                {data.countyFocus.map((item) => (
+                  <li key={`${item.documentTitle}-${item.page}-${item.title}`} className="flex flex-col gap-1">
+                    <p className="text-sm font-medium text-text">{item.title}</p>
+                    <p className="text-sm text-text-muted">{item.excerpt}</p>
+                    {item.url ? (
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex w-fit items-center gap-1 text-xs text-accent underline-offset-2 hover:underline"
+                      >
+                        {item.documentTitle}
+                        {item.page ? `, p. ${item.page}` : ''}
+                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                      </a>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          ) : null}
         </div>
 
         <div>

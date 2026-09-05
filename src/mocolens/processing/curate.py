@@ -15,17 +15,51 @@ from .transforms import vision_zero
 
 DATA_DIR = Path("data")
 LOG_PATH = Path("logs/curation/runs.jsonl")
+BUILD_INFO_FILE = "build_info.json"
 
 _BUILDERS = {"vision_zero": vision_zero.build}
 
 CURATED_TABLES = ["fact_participants", "fact_crashes"]
 
 
+def build_info_path(domain: str) -> Path:
+    return DATA_DIR / "curated" / domain / BUILD_INFO_FILE
+
+
+def build_info(domain: str) -> dict | None:
+    """What the shipped curated artifacts say about their own build.
+
+    Written next to the tables (not only to logs/curation/runs.jsonl) because
+    logs/ is gitignored and excluded from the container image, so the log is
+    unreadable in production - freshness read from it alone is always None
+    once deployed.
+    """
+    path = build_info_path(domain)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def data_as_of(domain: str) -> str | None:
+    """Freshness marker for a domain: when its curated tables were built.
+
+    Prefers the shipped sidecar, falling back to the local run log for a
+    working tree curated before the sidecar existed.
+    """
+    info = build_info(domain)
+    if info and info.get("built_at"):
+        return info["built_at"]
+    return (latest_run_info(domain) or {}).get("ran_at")
+
+
 def latest_run_info(domain: str) -> dict | None:
     """The most recent logged curation run for a domain, or None if it has
-    never been run. Used as the "data_as_of" freshness marker by retrieval
-    tools - it reflects when the curated tables were actually built, not
-    just today's date.
+    never been run. The full run record, quality report included; callers
+    that only want freshness should use data_as_of(), which also works in
+    the container image where logs/ is absent.
     """
     if not LOG_PATH.exists():
         return None
@@ -71,15 +105,29 @@ def curate_domain(domain: str, snapshot_date: str | None = None) -> dict:
         for table in CURATED_TABLES:
             duckdb_store.export_parquet(con, table, domain)
             row_counts[table] = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        coverage = con.execute("SELECT MIN(crash_date), MAX(crash_date) FROM fact_crashes").fetchone()
     finally:
         con.close()
 
+    built_at = datetime.now(timezone.utc).isoformat()
     result = {
         "domain": domain,
         "snapshot_dir": str(snapshot_dir),
         "row_counts": row_counts,
         "quality_report": report.to_dict(),
     }
+
+    build_info_path(domain).write_text(
+        json.dumps({
+            "domain": domain,
+            "built_at": built_at,
+            "snapshot_date": Path(snapshot_dir).name,
+            "row_counts": row_counts,
+            "coverage_start": coverage[0].isoformat() if coverage[0] else None,
+            "coverage_end": coverage[1].isoformat() if coverage[1] else None,
+        }, indent=2),
+        encoding="utf-8",
+    )
 
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOG_PATH.open("a", encoding="utf-8") as f:

@@ -1,0 +1,109 @@
+# Scheduled data refresh (architecture doc §24).
+#
+# The curated artifacts this produces - data/curated/<domain>/ - are committed
+# to the repository on purpose: Render's instance has no persistent disk, so
+# the analytics database and the report index are baked into the container
+# image at build time (see the Dockerfile). That makes the commit at the end
+# of this job the actual publish step; without it a refresh would update
+# nothing anyone can see.
+#
+# Costs worth knowing about: the `ingest` extra pulls Docling and Torch, which
+# is a multi-GB install. It is needed only to parse a PDF that changed, and
+# change detection means most runs parse nothing at all - but the install
+# happens regardless, hence the pip cache below.
+name: Refresh county data
+
+on:
+  schedule:
+    # Weekly, matching the `refresh: weekly` cadence in config/sources.yaml.
+    # 07:00 UTC on Mondays: outside county business hours in both directions.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_documents:
+        description: "Reprocess every document, bypassing change detection"
+        type: boolean
+        default: false
+
+# Only the commit at the end needs write access.
+permissions:
+  contents: write
+
+concurrency:
+  # A refresh commits to the default branch; two at once would race.
+  group: refresh-county-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Change detection compares each document against the manifest and the
+      # processed-state file from the previous run, both of which live in
+      # gitignored directories - on a bare runner every document would look
+      # new and every refresh would re-parse the whole corpus. Only the
+      # document side is cached: the API snapshots are re-downloaded every run
+      # anyway, and caching them would grow by a snapshot a week forever.
+      #
+      # A cold cache (GitHub evicts after 7 days unused, and this runs weekly)
+      # costs one full reprocess and then repairs itself - it is a slow run,
+      # not a wrong one.
+      - name: Restore document lake and processing state
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/raw/documents
+            data/processed
+          key: mocolens-documents-${{ github.run_id }}
+          restore-keys: mocolens-documents-
+
+      - name: Install
+        run: pip install -e ".[ingest,dev]"
+
+      - name: Refresh
+        run: |
+          python scripts/refresh.py \
+            --domain vision_zero \
+            --json refresh-report.json \
+            ${{ inputs.force_documents && '--force-documents' || '' }}
+
+      # The refresh's own smoke checks have passed by here; this is the
+      # regression suite, so a refresh cannot publish artifacts that break
+      # the retrieval tools or the API contracts.
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Publish refreshed artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/curated
+          if git diff --cached --quiet; then
+            echo "No change to curated data - nothing to publish."
+            exit 0
+          fi
+          git commit -m "Refresh curated county data
+
+          Automated weekly refresh (.github/workflows/refresh.yml)."
+          git push
+
+      # Kept whether the run passed or failed - on a failure this report and
+      # the pipeline's own JSONL logs are the whole diagnosis.
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-report
+          path: |
+            refresh-report.json
+            logs/
+          if-no-files-found: warn
+          retention-days: 30

@@ -50,6 +50,30 @@ class Insight(ApiModel):
     text: str
 
 
+class RankedArea(ApiModel):
+    rank: int
+    name: str
+    crash_count: int
+    trend: float
+
+
+class HotspotSummaryCard(ApiModel):
+    label: str
+    primary_text: str
+    secondary_text: str
+
+
+class CountyFocusItem(ApiModel):
+    """One retrieved county-report passage, kept with the provenance needed
+    to link back to the document it came from.
+    """
+    title: str
+    excerpt: str
+    document_title: str | None = None
+    page: str | None = None
+    url: str | None = None
+
+
 class DashboardResponse(ApiModel):
     metrics: list[Metric]
     crash_trend: list[TimeSeriesPoint]
@@ -57,6 +81,26 @@ class DashboardResponse(ApiModel):
     road_user_breakdown: list[CategoryValue]
     hotspots: list[Hotspot]
     insights: list[Insight]
+    data_as_of: str | None = None
+
+
+class TrendsResponse(ApiModel):
+    """GET /api/dashboard/trends - the time series and breakdowns on their
+    own, for a caller that wants the charts without the KPI cards, hotspots,
+    and insights the summary endpoint also computes.
+    """
+    crash_trend: list[TimeSeriesPoint]
+    severity_breakdown: list[CategoryValue]
+    road_user_breakdown: list[CategoryValue]
+    data_as_of: str | None = None
+
+
+class MapResponse(ApiModel):
+    """GET /api/dashboard/map - the geographic view behind the Hotspots screen."""
+    hotspots: list[Hotspot]
+    ranked_areas: list[RankedArea]
+    summary_cards: list[HotspotSummaryCard]
+    county_focus: list[CountyFocusItem]
     data_as_of: str | None = None
 
 
@@ -69,6 +113,26 @@ class Citation(ApiModel):
     url: str | None = None
     page: str | None = None
     published_at: str | None = None
+
+
+class DataSource(ApiModel):
+    """One entry from the source registry, with real freshness where a
+    signal exists. `last_updated` is None rather than a guess when nothing
+    has been ingested or shipped for that source yet.
+    """
+    id: str
+    title: str
+    description: str
+    source_type: str  # 'dataset' | 'report'
+    refresh_cadence: str | None = None
+    last_updated: str | None = None
+    url: str | None = None
+
+
+class SourcesResponse(ApiModel):
+    sources: list[DataSource]
+    citations: list[Citation]
+    indexed_chunk_count: int
 
 
 class VisualizationSpec(ApiModel):

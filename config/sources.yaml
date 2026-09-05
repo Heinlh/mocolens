@@ -29,6 +29,11 @@ domains:
         title: "Vision Zero Reports"
         description: "County Vision Zero action plans, work plans, and annual progress reports."
         url: "https://www.montgomerycountymd.gov/visionzero/action-plan-reports-vision-zero"
+        # How often the page is re-crawled, matching the schedule in
+        # .github/workflows/refresh.yml. The county publishes these a few
+        # times a year; the crawl is cheap and change detection means an
+        # unchanged report costs nothing to re-check.
+        refresh: weekly
         allowed_domains:
           - www.montgomerycountymd.gov
           - assets.montgomerycountymd.gov

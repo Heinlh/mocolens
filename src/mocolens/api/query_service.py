@@ -7,7 +7,7 @@ import uuid
 from langchain_core.messages import ToolMessage
 
 from ..agent.schemas import AgentAnswer
-from ..processing.curate import latest_run_info
+from ..processing.curate import data_as_of
 from ..retrieval.visualization_tool import build_visualization_spec
 from . import schemas
 
@@ -167,7 +167,7 @@ def _to_response(question: str, answer: AgentAnswer, messages: list) -> schemas.
         citations=citations,
         follow_up_prompts=answer.follow_up_prompts,
         limitations=answer.caveats,
-        data_as_of=(latest_run_info(DOMAIN) or {}).get("ran_at"),
+        data_as_of=data_as_of(DOMAIN),
     )
 
 

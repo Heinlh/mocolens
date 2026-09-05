@@ -29,6 +29,15 @@ each layer was verified empirically (see PROJECT_STATUS.txt), not assumed:
 
 Even if one of these had a gap, the others still hold - this is
 defense in depth, not one clever trick.
+
+The sandbox is built once per (domain, data directory) and reused. Loading
+both fact tables costs ~63 MB, and rebuilding that for every single
+LLM-issued query - up to 3 per question, on a 512 MB instance - was pure
+waste. Each query still gets its own `.cursor()` off the shared database,
+which is what keeps the reuse safe: a cursor inherits the locked-down
+settings (verified: it can neither read files nor turn
+enable_external_access back on) but owns its own interrupt, so one query
+timing out cannot abort another running alongside it.
 """
 import json
 import re
@@ -38,7 +47,7 @@ from pathlib import Path
 
 import duckdb
 
-from ..processing.curate import latest_run_info
+from ..processing.curate import data_as_of as curated_data_as_of
 
 DATA_DIR = Path("data")
 AUDIT_LOG = Path("logs/retrieval/sql_queries.jsonl")
@@ -62,6 +71,11 @@ _DISALLOWED_KEYWORDS_RE = re.compile(
 
 MAX_ROWS_DEFAULT = 500
 TIMEOUT_SECONDS_DEFAULT = 10.0
+
+# Keyed by data directory as well as domain: DATA_DIR is monkeypatched per
+# test, and a sandbox built from a different directory holds different rows.
+_sandboxes: dict[tuple[str, str], duckdb.DuckDBPyConnection] = {}
+_sandbox_lock = threading.Lock()
 
 
 class QueryRejected(Exception):
@@ -95,6 +109,16 @@ def _build_sandbox(domain: str) -> duckdb.DuckDBPyConnection:
     # database, or have this setting flipped back by a later statement.
     con.execute("SET enable_external_access = false")
     return con
+
+
+def _sandbox(domain: str) -> duckdb.DuckDBPyConnection:
+    """The shared, already-locked-down connection for this domain."""
+    key = (domain, str(DATA_DIR))
+    with _sandbox_lock:
+        con = _sandboxes.get(key)
+        if con is None:
+            con = _sandboxes[key] = _build_sandbox(domain)
+        return con
 
 
 def _validate(con: duckdb.DuckDBPyConnection, sql: str) -> None:
@@ -163,7 +187,7 @@ def query_analytics(
         "asked_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    con = _build_sandbox(domain)
+    con = _sandbox(domain).cursor()
     try:
         _validate(con, sql)
         clamped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')}) AS _q LIMIT {int(max_rows)}"
@@ -183,10 +207,10 @@ def query_analytics(
             "query": sql, "data_as_of": None, "error": f"query failed: {exc}",
         }
     finally:
+        # Closes this cursor only - the shared sandbox stays loaded.
         con.close()
 
-    run_info = latest_run_info(domain)
-    data_as_of = run_info["ran_at"] if run_info else None
+    data_as_of = curated_data_as_of(domain)
 
     audit_entry["row_count"] = len(rows)
     audit_entry["error"] = None

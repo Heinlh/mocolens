@@ -6,11 +6,12 @@
 # whenever the curated data changes (scripts/build_curated_tables.py, etc.).
 #
 # Deliberately installs the base package only, NOT the "ingest" extra
-# (Docling) - Docling pulls a GPU torch build plus OCR/vision deps that are
-# several GB and unused at serve time (it only runs during ingestion, never
-# while answering a query). The CPU-only torch install below covers the one
-# runtime dependency that still needs it: sentence-transformers, for
-# embedding incoming questions against the vector index.
+# (Docling, torch) - those pull several GB of GPU/OCR/vision dependencies
+# that only ever run during ingestion, never while answering a query.
+# Nothing at serve time needs torch: the question encoder is the ONNX
+# export in models/ (see scripts/export_embedding_onnx.py), run under
+# onnxruntime. That swap is worth ~276 MB of resident memory - importing
+# torch alone measured +390 MB, on a 512 MB instance.
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -19,9 +20,9 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY config ./config
 COPY data/curated ./data/curated
+COPY models ./models
 
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir .
+RUN pip install --no-cache-dir .
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

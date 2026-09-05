@@ -36,7 +36,10 @@ def fixture_curated_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sql_tool, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(sql_tool, "AUDIT_LOG", tmp_path / "logs" / "sql_queries.jsonl")
-    monkeypatch.setattr("mocolens.processing.curate.latest_run_info", lambda domain: None)
+    # Point the curation layer at the same empty tmp tree, so data_as_of
+    # resolves through its real code path and finds no build here.
+    monkeypatch.setattr("mocolens.processing.curate.DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr("mocolens.processing.curate.LOG_PATH", tmp_path / "logs" / "curation.jsonl")
     yield
 
 
@@ -164,3 +167,34 @@ def test_audit_log_records_both_success_and_rejection(tmp_path):
     entries = [json.loads(line) for line in lines]
     assert entries[0]["error"] is None
     assert entries[1]["error"] is not None
+
+
+# --- the shared sandbox ---
+
+def test_sandbox_is_built_once_and_reused_across_queries():
+    # Loading both fact tables costs ~63 MB against the real curated data;
+    # rebuilding that per query was the single largest avoidable allocation
+    # in the request path.
+    sql_tool.query_analytics(question="q1", sql="SELECT 1", reason="r")
+    first = sql_tool._sandbox("vision_zero")
+    sql_tool.query_analytics(question="q2", sql="SELECT 2", reason="r")
+    assert sql_tool._sandbox("vision_zero") is first
+
+
+def test_reused_sandbox_still_refuses_file_access():
+    # Reuse must not weaken the sandbox: each query runs on a cursor off the
+    # shared connection, and a cursor inherits enable_external_access=false.
+    r = sql_tool.query_analytics(
+        question="x", reason="test",
+        sql="SELECT * FROM read_csv('/etc/passwd')",
+    )
+    assert r["error"] is not None
+    assert r["rows"] == []
+
+
+def test_reused_sandbox_cannot_be_unlocked_by_a_later_query():
+    sql_tool.query_analytics(question="x", sql="SET enable_external_access = true", reason="r")
+    r = sql_tool.query_analytics(
+        question="x", sql="SELECT * FROM read_parquet('/tmp/anything.parquet')", reason="r",
+    )
+    assert r["error"] is not None

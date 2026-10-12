@@ -382,3 +382,112 @@ def test_dashboard_endpoint_rate_limit_does_not_trip_under_normal_filter_clickin
         )
         statuses = [client.get("/api/dashboard/summary").status_code for _ in range(8)]
     assert statuses == [200] * 8
+
+
+# --- cost and capacity ceilings that do not depend on the caller's IP ---
+
+def _request_with_forwarded_for(value: str):
+    from starlette.requests import Request
+    return Request({
+        "type": "http", "headers": [(b"x-forwarded-for", value.encode())],
+        "client": ("10.0.0.1", 1234),
+    })
+
+
+def test_client_ip_ignores_client_supplied_entries_once_proxy_hops_are_configured(monkeypatch):
+    from mocolens.api import main
+
+    forged = _request_with_forwarded_for("1.1.1.1, 2.2.2.2, 198.51.100.7, 10.9.9.9")
+    # Unset: the left-most entry, which is whatever the client sent.
+    assert main._client_ip(forged) == "1.1.1.1"
+    # Two trusted proxies appended the last two entries, so the client is the
+    # second from the right no matter what it put in front.
+    monkeypatch.setattr(main, "TRUSTED_PROXY_HOPS", 2)
+    assert main._client_ip(forged) == "198.51.100.7"
+    # A shorter chain than configured must not index out of range or collapse
+    # every visitor onto one key.
+    assert main._client_ip(_request_with_forwarded_for("203.0.113.5")) == "203.0.113.5"
+
+
+def test_daily_budget_stops_a_caller_who_forges_a_new_ip_for_every_request():
+    from mocolens.api.main import DAILY_QUERY_BUDGET
+
+    limiter.enabled = True
+    with patch("mocolens.api.main.query_service.ask") as mock_ask:
+        mock_ask.return_value = schemas.QueryResponse(
+            id="q", question="q", answer="a", summary="s", what_data_means="m",
+        )
+
+        def ask_as(n: int) -> int:
+            return client.post(
+                "/api/query", json={"question": "How many crashes happened?"},
+                headers={"X-Forwarded-For": f"203.0.{n // 250}.{n % 250}"},
+            ).status_code
+
+        # Every request arrives from a "different" address, so no per-IP
+        # limit ever trips - only the shared budget can.
+        assert {ask_as(n) for n in range(DAILY_QUERY_BUDGET)} == {200}
+        assert ask_as(DAILY_QUERY_BUDGET) == 429
+        assert mock_ask.call_count == DAILY_QUERY_BUDGET
+
+
+def test_query_is_refused_not_queued_when_every_agent_slot_is_busy():
+    from mocolens.api import main
+
+    with patch("mocolens.api.main.query_service.ask") as mock_ask:
+        mock_ask.return_value = schemas.QueryResponse(
+            id="q", question="q", answer="a", summary="s", what_data_means="m",
+        )
+        for _ in range(main.MAX_CONCURRENT_QUERIES):
+            assert main._query_slots.acquire(blocking=False)
+        try:
+            busy = client.post("/api/query", json={"question": "How many crashes happened?"})
+        finally:
+            for _ in range(main.MAX_CONCURRENT_QUERIES):
+                main._query_slots.release()
+        assert busy.status_code == 503
+        assert busy.headers["Retry-After"]
+        mock_ask.assert_not_called()
+        assert client.post("/api/query", json={"question": "How many crashes happened?"}).status_code == 200
+
+
+def test_a_failed_agent_run_gives_its_slot_back():
+    from mocolens.api import main
+
+    with patch("mocolens.api.main.query_service.ask", side_effect=ValueError("boom")):
+        for _ in range(main.MAX_CONCURRENT_QUERIES + 1):
+            assert client.post("/api/query", json={"question": "How many crashes happened?"}).status_code == 500
+    # A leaked slot per failure would leave fewer than the full set free.
+    taken = [main._query_slots.acquire(blocking=False) for _ in range(main.MAX_CONCURRENT_QUERIES)]
+    for acquired in taken:
+        if acquired:
+            main._query_slots.release()
+    assert all(taken)
+
+
+def test_request_id_in_the_response_header_is_the_one_the_sql_audit_log_sees():
+    from mocolens.retrieval import sql_tool
+
+    seen = []
+
+    def _capture(question):
+        seen.append(sql_tool.request_id.get())
+        return schemas.QueryResponse(id="q", question="q", answer="a", summary="s", what_data_means="m")
+
+    with patch("mocolens.api.main.query_service.ask", side_effect=_capture):
+        first = client.post("/api/query", json={"question": "How many crashes happened?"})
+        second = client.post("/api/query", json={"question": "How many crashes happened?"})
+    assert seen == [first.headers["X-Request-ID"], second.headers["X-Request-ID"]]
+    assert seen[0] and seen[0] != seen[1]
+
+
+def test_model_provider_rate_limit_is_reported_as_busy_not_as_a_broken_agent():
+    class ProviderRateLimit(Exception):
+        status_code = 429  # what the OpenAI client raises when Azure throttles
+
+    with patch("mocolens.api.main.query_service.ask", side_effect=ProviderRateLimit("token rate limit")):
+        r = client.post("/api/query", json={"question": "How many crashes happened?"})
+    assert r.status_code == 503
+    assert r.headers["Retry-After"]
+    assert "try again" in r.json()["detail"]
+    assert "token rate limit" not in r.json()["detail"]

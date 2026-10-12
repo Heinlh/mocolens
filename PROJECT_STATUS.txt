@@ -1,5 +1,5 @@
 MOCOLENS - PROJECT STATUS
-Last updated: 2026-09-03
+Last updated: 2026-10-11
 Full target architecture: MoCoLens_MVP_ARCHITECTURE.md (this file tracks build progress against it)
 
 ==================================================
@@ -618,38 +618,133 @@ Not yet done: no deployment has been set up (discussed - Vercel
 recommended - not yet executed); repo is not yet a git repository, so
 nothing has been pushed anywhere.
 
+--------------------------------------------------
+8. 2026-10-11 PASS - evaluation, community geography, hardening
+--------------------------------------------------
+Sections 1-7 above are a history; several of their "still mock" / "not
+built" notes are superseded. As of this date: Sources and Hotspots both
+call real endpoints (GET /api/sources, GET /api/dashboard/map), all six
+API endpoints exist, and the weekly refresh workflow exists.
+
+Agent evaluation harness (src/mocolens/evaluation.py, evals/questions.yaml,
+scripts/evaluate.py):
+  52 questions in five categories (structured 17, document 10, hybrid 8,
+  ambiguous 7, unsupported 10), run through the same path production uses -
+  the API's scope gate, then the real agent. Per question it records
+  correctness, tool selection, citation relevance, latency, tool errors,
+  and token use. Every check is deterministic (no LLM grading an LLM).
+  Structured cases carry reference SQL run at evaluation time instead of a
+  written-down number, so a data refresh cannot break them.
+
+  First run (50 questions, before any fix): 42/50 correct. Six of the eight
+  misses were real agent defects, not grading noise:
+    - named partial-year 2026 as "the full year with the fewest crashes"
+    - asked for 2022 and 2025, queried 2022 and 2023, then stated that
+      2025 data "is not available yet" (it is: 447)
+    - produced a 2027 forecast from an average that included the partial year
+    - answered "crashes in Silver Spring in 2025" from a latitude/longitude
+      box it invented, with no mention of how
+    - told the user a report "does not provide" a figure that is in it
+    - one Azure token-rate-limit 429 with only 3 questions in flight
+  The other two were mistakes in the reference queries, fixed in the
+  question file ('%GEORGIA%' also matches GEORGIAN WAY; rain with or
+  without freezing rain is two defensible readings, now both accepted).
+
+  After the prompt/tool-note fixes and the community column below:
+  50/52 correct, tools 42/42, citations 35/35, 0 errors, median 7.2s,
+  p95 10.5s, ~8,100 input / ~600 output tokens per answered question.
+  Still failing, left visible on purpose rather than tuned away:
+    - d02 (school bus fines): the passage holding "$12.9 million" does not
+      reach the top 5 for the agent's wording - a retrieval limit.
+    - s11 failed once by counting people instead of crashes through a
+      join to fact_participants (15 vs 14); a tool note now covers it and
+      the rerun passed, but it is model behaviour, so expect it to recur.
+
+Community geography (transforms/vision_zero.py _tag_communities,
+data/reference/community_boundaries.parquet, scripts/build_community_boundaries.py):
+  fact_crashes has a "community" column: the Census place (city, town, or
+  census-designated place) each crash's coordinates fall inside. Source is
+  the Census Bureau's TIGER/Line 2024 place boundaries, committed as ring
+  vertices so the weekly refresh does not depend on census.gov. The
+  point-in-polygon test is plain SQL (even-odd ray casting), so the
+  refresh runner needs no spatial extension; it takes 0.7s.
+  Validated two independent ways:
+    - against DuckDB spatial's ST_Contains on the original polygons, over
+      every crash: 124,765 of 124,769 identical; the other 4 lie exactly
+      on a boundary line, which ST_Contains excludes by definition.
+    - against the reporting agency: 94.1% of Rockville Police crashes fall
+      inside Rockville, 90.1% of Gaithersburg's inside Gaithersburg, 94.2%
+      of Takoma Park's inside Takoma Park. This is now a standing quality
+      check, so a wrong boundary file is flagged.
+  115,307 of 124,769 crashes (92.4%) are in one of 82 communities; the
+  rest are rural or have no usable coordinates and stay NULL.
+  Curated tables were rebuilt from the existing 2026-08-30 snapshot: same
+  rows and totals, one added column.
+  Not done: the dashboard's Area filter still groups by police agency.
+
+A data problem found on the way, NOT yet fixed at the curation layer:
+  the police feed switched code lists on 2024-01-01 for weather,
+  light_condition, collision_type, surface_condition and route_type
+  ("RAINING" -> "RAIN", "DARK LIGHTS ON" -> "DARK - LIGHTED", "SAME DIR
+  REAR END" -> "FRONT TO REAR", "County" -> "County Route"). Any filter or
+  GROUP BY on those columns that crosses 2024 is wrong unless both
+  spellings are matched. The agent is now told this in the query_analytics
+  tool notes; the proper fix is normalize_* macros like normalize_agency.
+
+Serving-path hardening (api/main.py, retrieval/sql_tool.py):
+  - The SQL sandbox had no memory bound. Measured: one valid SELECT (a
+    cross join into a GROUP BY) took the process from 88 MB to 4.2 GB
+    before the 10s timeout fired - an OOM kill on a 512 MB instance. Now
+    memory_limit=160MB, threads=2, and lock_configuration=true; the same
+    query fails cleanly in ~2s and the sandbox stays usable.
+  - A daily budget on /api/query (DAILY_QUERY_BUDGET, default 200) that
+    does not depend on the caller's IP, because the per-IP limits can be
+    reset by forging X-Forwarded-For. In-memory, so a restart resets it.
+  - At most MAX_CONCURRENT_QUERIES (default 2) agent runs at once; the
+    rest get a 503 with Retry-After instead of queueing. Azure throttling
+    (429) is also reported as that 503, not as a generic 500.
+  - TRUSTED_PROXY_HOPS: the rate-limit key can now be the Nth entry from
+    the right of X-Forwarded-For. Left at 0 (left-most, forgeable) because
+    the right value for Render has not been observed yet - see OPEN ISSUES.
+  - Every request gets an X-Request-ID and one JSON log line with status
+    and duration_ms; the id is carried into the SQL audit log, which now
+    also goes to stdout (the file is unreadable on the deployed instance).
+  - GET /api/health returns lastRefresh / snapshotDate / dataThrough.
+
+Latency under load (scripts/loadtest.py, local 16-core laptop, 200
+requests each, not the deployed 512 MB instance - relative, not absolute):
+                       1 at a time      10 at a time     25 at a time
+  /dashboard/summary   p50 179  p95 344   532 / 1245      1385 / 2540 ms
+  /dashboard/map       p50 224  p95 440   433 / 1078       743 / 1557 ms
+  /dashboard/trends    p50 108  p95 181   156 /  324       506 / 1186 ms
+  No errors at any level. /api/sources had a 40-second median: it
+  re-parsed the raw JSON snapshots (525 MB) on every call to count
+  records. Cached per file; now p50 134 ms. That path only runs where the
+  raw lake exists, i.e. not in the deployed image.
+
+Demo mode (frontend): sample data now appears only in a dev build with no
+backend configured, under a banner. The sidebar's "Recent questions" - a
+fixed list with invented "2h ago" timestamps, shown in production - is now
+"Example questions". The About page no longer says all data is mocked.
+
 ==================================================
-WHAT IS PLANNED 
+WHAT IS PLANNED
 ==================================================
 (Phases below follow MoCoLens_MVP_ARCHITECTURE.md section 30.)
 
 Phase 3 - Retrieval tools: DONE. See section 4 above.
 
-Phase 4 - Agentic workflow: DONE, control-flow-tested AND live-verified
-  with real questions against gpt-4.1-mini. See section 6 above. Still
-  open: the frontend's "AgentAnswer" screen is still 100% mocked (that's
-  POST /api/query, Phase 5 below - the agent exists now, the route to
-  reach it from the frontend doesn't yet).
+Phase 4 - Agentic workflow: DONE. See sections 6 and 8.
 
-Phase 5 - Public API + real frontend wiring: MOSTLY DONE.
-  - GET /api/dashboard/summary, POST /api/query, and GET /api/health all
-    exist and are wired to the real frontend (section 5 above), each
-    proven with a live browser screenshot, not just curl. Still missing
-    from §21's list: GET /api/dashboard/trends, GET /api/dashboard/map,
-    GET /api/sources (a thin wrapper around retrieval/metadata_tool.py -
-    not built yet, but the tool behind it already is).
-  - Frontend service layer: analyticsService.getDashboardOverview() and
-    queryService.ask() both call the real backend when configured
-    (sections 5/7). getHotspots() and sourceService.ts still resolve mock
-    data - sourceService is waiting on GET /api/sources above.
+Phase 5 - Public API + real frontend wiring: DONE. All of §21's endpoints
+  exist and every data-backed screen calls them (section 8).
 
-Phase 6 - Automated refresh (not started)
-  - Scheduled ingestion (GitHub Actions or equivalent), change-detection
-    driven re-processing, incremental (not full-rebuild) vector index
-    updates, smoke tests after each refresh. Per the user's own stated
-    ordering, this comes after the agent and after POST /api/query is
-    wired up, not before - it turns a working MVP into a maintained one,
-    it isn't part of proving the MVP works.
+Phase 6 - Automated refresh: BUILT, but it has never published.
+  .github/workflows/refresh.yml runs weekly (ingest, curate, change-driven
+  document processing, smoke checks, test suite, commit). All five
+  scheduled runs since it shipped (2026-09-07 to 2026-10-05) failed at the
+  Test step - see RESOLVED ISSUES 8 - so production is still serving the
+  2026-08-30 snapshot. The fix is in the working tree, not yet pushed.
 
 Also not yet built, called out explicitly in the architecture doc:
   - dim_location - deliberately skipped, not just deferred: the real
@@ -661,8 +756,7 @@ Also not yet built, called out explicitly in the architecture doc:
     logs/retrieval/sql_queries.jsonl (an audit log of every query_analytics
     call, §14.1's "validated before execution" made inspectable after
     the fact too)
-  - No evaluation harness yet (the user's own stated ordering also puts
-    this last, after the agent exists to evaluate)
+  - (Superseded: the evaluation harness exists - section 8.)
   - (Superseded: both are now deployed - frontend on Vercel, backend on
     Render, with the curated data and the ONNX encoder baked into the
     image rather than needing a persistent disk.)
@@ -778,12 +872,51 @@ RESOLVED ISSUES
    runs for tens of seconds, so a short timeout would be wrong) and
    surfaces a plain-English message.
 
+8. [RESOLVED IN WORKING TREE 2026-10-11, not yet pushed] The weekly
+   refresh workflow failed every scheduled run. The refresh step itself
+   succeeded each time; the Test step after it failed, so the publish
+   step was skipped. Confirmed by running the committed tests against a
+   real refresh (126,010 crashes as of 2026-10-11):
+     a. tests/api/test_dashboard.py pinned the all-time severity totals
+        (82463 / 41904 / 402) and tests/retrieval/test_metadata_tool.py
+        pinned the raw record count (124_770). Both are the 2026-08-30
+        snapshot's numbers, and the workflow runs the suite against the
+        data it has just refreshed. Now checked against the database
+        instead of a constant. (Diagnosed and fixed in a parallel session.)
+     b. With those fixed, a third test still failed intermittently:
+        dashboard_service ordered several results by count with no
+        tiebreak, and on fresh data "Fatal" and "Property damage" tie at
+        14 for one filter, so two identical requests returned bars in
+        different orders. Every count-ordered result now has a
+        deterministic tiebreak.
+   Side effect of the failures: actions/cache only saves on success, so
+   every run so far was a cold, full PDF reprocess.
+
+9. [RESOLVED 2026-10-11] LLM-written SQL could exhaust the instance's
+   memory inside the query timeout. See section 8, serving-path hardening.
+
+10. [RESOLVED 2026-10-11] Fabricated-looking content on live screens: the
+   sidebar's "Recent questions" and the About page. See section 8.
+
 ==================================================
 OPEN ISSUES
 ==================================================
 1. Document coverage gap noted above (5 of ~30 linked reports discovered
    - static-HTML crawler limitation, not a bug).
 2. (Resolved - the repo is on git and deployed from it.)
+3. Rate-limit keys are still forgeable in production. TRUSTED_PROXY_HOPS
+   is unset because the number of proxies Render puts in front of the app
+   has not been observed. After the next deploy, read "xff_hops" from an
+   ordinary request's log line and set the variable to it. Until then the
+   daily budget is what bounds cost.
+4. The 2024 code-list change is handled by a note to the agent, not by
+   normalizing the columns (section 8). The Hotspots page's "most common
+   crash type" over "All time" is affected too: rear-end crashes are split
+   across two codes.
+5. Report retrieval misses some facts that are in the corpus (eval case
+   d02). Scores from this embedding model sit in a narrow 0.72-0.89 band,
+   so rank order among top passages is fragile.
+6. The dashboard's Area filter still means police agency, not community.
 
 ==================================================
 WHERE THINGS LIVE
@@ -812,6 +945,10 @@ frontend/                     6-screen React app (done) - Dashboard Overview
                                AND the Ask flow backed by real data, the
                                Hotspots page and Sources page still mock
 .env.example                  AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT
-tests/                         213 tests total across the whole backend
-                               as of this update (tests/storage/
-                               test_vector_store.py is the newest)
+evals/questions.yaml          the agent evaluation set (52 questions)
+src/mocolens/evaluation.py    evaluation harness; scripts/evaluate.py runs it
+logs/evals/                   one JSON record per evaluation run
+data/reference/               Census place boundaries for community tagging
+scripts/loadtest.py           latency under load for one endpoint
+tests/                         380 tests total across the whole backend
+                               as of this update

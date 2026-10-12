@@ -28,7 +28,9 @@ downloaded Socrata data, not assumed):
     nulled for mapping purposes and counted, the crash row is kept.
   - the real Socrata schema has no participant age or municipality field
     at all, despite the architecture doc's suggested model listing them.
-    Not fabricated here - see PROJECT_STATUS.txt for the note.
+    Age is not fabricated. Place is derived, not invented: each crash's
+    own coordinates are tested against Census place boundaries
+    (_tag_communities), which is the only community signal in the table.
 """
 from pathlib import Path
 
@@ -41,6 +43,20 @@ from ..quality import QualityReport, run_check
 # geocode, not a real Montgomery County crash location.
 LAT_MIN, LAT_MAX = 38.85, 39.40
 LON_MIN, LON_MAX = -77.65, -76.80
+
+# Census place boundaries as ring vertices, written by
+# scripts/build_community_boundaries.py and committed.
+BOUNDARIES_PATH = Path("data/reference/community_boundaries.parquet")
+# Each city's own police force works almost entirely inside that city, which
+# makes agency_name an independent check on the boundaries: 90-94% of each
+# force's crashes fall inside its city's polygon. Well below that means the
+# boundary file is wrong, not that the police moved.
+CITY_POLICE = {
+    "Rockville Police": "Rockville",
+    "Gaithersburg Police": "Gaithersburg",
+    "Takoma Park Police": "Takoma Park",
+}
+MIN_CITY_POLICE_AGREEMENT = 0.85
 
 _MACROS = """
 CREATE OR REPLACE MACRO clean_upper(v) AS NULLIF(UPPER(TRIM(COALESCE(v, ''))), '');
@@ -352,15 +368,120 @@ def _build_fact_crashes(con: duckdb.DuckDBPyConnection, report: QualityReport) -
     )
 
 
+def _tag_communities(con: duckdb.DuckDBPyConnection, report: QualityReport) -> None:
+    """Add fact_crashes.community: the Census place each crash's coordinates
+    fall inside, or NULL outside every named place.
+
+    Point-in-polygon by even-odd ray casting, in plain SQL: a point is inside
+    a place if a ray drawn east from it crosses that place's boundary an odd
+    number of times. Rings are not told apart - a hole is just more boundary,
+    and the parity comes out right - so multi-part places and places with
+    holes need no special handling. Checked against DuckDB's spatial
+    ST_Contains over every crash in the table: 124,765 of 124,769 identical,
+    and the other four sit exactly on a boundary line, which ST_Contains
+    excludes by definition and this assigns to the place.
+
+    ponytail: the range join below compares each crash with every boundary
+    edge spanning its latitude (a few seconds at this size). If the table
+    grows by an order of magnitude, prefilter on each place's bounding box.
+    """
+    if not BOUNDARIES_PATH.exists():
+        raise FileNotFoundError(
+            f"{BOUNDARIES_PATH} missing - run scripts/build_community_boundaries.py first."
+        )
+    boundaries = str(BOUNDARIES_PATH).replace("'", "''")
+    # One row per boundary edge. Horizontal edges are dropped: a horizontal
+    # ray cannot cross one, and they would divide by zero below. The
+    # half-open latitude range makes a ray through a shared vertex count
+    # exactly one of the two edges that meet there.
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _community_edges AS
+        SELECT community, x1, y1, x2, y2, LEAST(y1, y2) AS y_low, GREATEST(y1, y2) AS y_high
+        FROM (
+            SELECT community, lon AS x1, lat AS y1,
+                   LEAD(lon) OVER ring_order AS x2, LEAD(lat) OVER ring_order AS y2
+            FROM read_parquet('{boundaries}')
+            WINDOW ring_order AS (PARTITION BY ring ORDER BY seq)
+        )
+        WHERE x2 IS NOT NULL AND y1 <> y2
+    """)
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE _crash_community AS
+        SELECT crash_id, MIN(community) AS community, COUNT(*) AS matches
+        FROM (
+            SELECT c.crash_id, e.community
+            FROM fact_crashes c
+            JOIN _community_edges e
+              ON c.latitude >= e.y_low AND c.latitude < e.y_high
+            WHERE c.longitude < e.x1 + (c.latitude - e.y1) * (e.x2 - e.x1) / (e.y2 - e.y1)
+            GROUP BY c.crash_id, e.community
+            HAVING COUNT(*) % 2 = 1
+        )
+        GROUP BY crash_id
+    """)
+    con.execute("""
+        CREATE OR REPLACE TABLE fact_crashes AS
+        SELECT c.*, t.community
+        FROM fact_crashes c LEFT JOIN _crash_community t USING (crash_id)
+    """)
+
+    run_check(
+        con, report,
+        name="community_tagging_matched_nothing",
+        sql="""
+            SELECT CASE WHEN COUNT(*) FILTER (WHERE latitude IS NOT NULL) > 0
+                         AND COUNT(community) = 0 THEN 1 ELSE 0 END
+            FROM fact_crashes
+        """,
+        severity="hard",
+        detail="located crashes exist but none fell inside any community boundary - "
+               "the boundary file is empty, or its coordinates are not longitude/latitude",
+    )
+    run_check(
+        con, report,
+        name="crash_in_more_than_one_community",
+        sql="SELECT COUNT(*) FROM _crash_community WHERE matches > 1",
+        severity="soft",
+        detail="place boundaries should not overlap; the alphabetically first community was kept",
+    )
+    run_check(
+        con, report,
+        name="located_crash_outside_every_community",
+        sql="SELECT COUNT(*) FROM fact_crashes WHERE latitude IS NOT NULL AND community IS NULL",
+        severity="soft",
+        detail="coordinates outside every Census place (rural areas, parkland) - community left NULL",
+    )
+    city_cases = " ".join(f"WHEN '{agency}' THEN '{city}'" for agency, city in CITY_POLICE.items())
+    run_check(
+        con, report,
+        name="city_police_crashes_outside_their_city",
+        sql=f"""
+            SELECT COUNT(*) FROM (
+                SELECT agency_name
+                FROM fact_crashes
+                WHERE agency_name IN ({", ".join(f"'{a}'" for a in CITY_POLICE)}) AND latitude IS NOT NULL
+                GROUP BY agency_name
+                HAVING AVG((community IS NOT DISTINCT FROM CASE agency_name {city_cases} END)::INT)
+                       < {MIN_CITY_POLICE_AGREEMENT}
+            )
+        """,
+        severity="soft",
+        detail=f"city police forces with under {MIN_CITY_POLICE_AGREEMENT:.0%} of their crashes inside "
+               "their own city's boundary - an independent check that the boundaries are right",
+    )
+
+
 def build(con: duckdb.DuckDBPyConnection, snapshot_dir: Path) -> QualityReport:
     """Load one raw Vision Zero snapshot and build fact_crashes + fact_participants.
 
     Order matters: fact_participants is built first so fact_crashes can join
-    against its per-crash aggregates (pedestrian_involved, fatality_count, ...).
+    against its per-crash aggregates (pedestrian_involved, fatality_count, ...),
+    and communities are tagged last, from the bounds-checked coordinates.
     """
     report = QualityReport()
     con.execute(_MACROS)
     _load_raw_json(con, snapshot_dir)
     _build_fact_participants(con, report)
     _build_fact_crashes(con, report)
+    _tag_communities(con, report)
     return report

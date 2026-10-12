@@ -88,7 +88,7 @@ try {
   const mapPayload = {
     hotspots: [{ id: '3899_-7702', area: 'Georgia Ave near Colesville Rd', latitude: 38.99, longitude: -77.02, crashCount: 146, trend: 15.9, intensity: 1 }],
     rankedAreas: [{ rank: 1, name: 'Georgia Ave near Colesville Rd', crashCount: 146, trend: 15.9 }],
-    summaryCards: [{ label: 'Most affected location', primaryText: 'Georgia Ave near Colesville Rd', secondaryText: '146 crashes' }],
+    summaryCards: [{ label: 'Most crashes recorded', primaryText: 'Georgia Ave near Colesville Rd', secondaryText: '146 crashes' }],
     countyFocus: [{ title: 'TOP PRIORITIES', excerpt: 'Refine the High Injury Network', documentTitle: 'VZ Assessment', page: '5-6', url: 'https://example.gov/vz.pdf' }],
     dataAsOf: '2026-08-31T22:57:43+00:00',
   }
@@ -119,6 +119,24 @@ try {
     assert.equal(err.status, 503)
     assert.equal(err.message, 'curated db missing')
   })
+
+  // --- demo mode is off once a backend is configured, so the two services
+  // that have sample data must reject on failure instead of using it ---
+  const { DEMO_MODE } = await server.ssrLoadModule('/src/lib/backendFetch.ts')
+  const { getDashboardOverview } = await server.ssrLoadModule('/src/services/analyticsService.ts')
+  const { ask } = await server.ssrLoadModule('/src/services/queryService.ts')
+  assert.equal(DEMO_MODE, false, 'a configured backend must never be demo mode')
+
+  for (const call of [() => getDashboardOverview(), () => ask('How many crashes?')]) {
+    await withFetch(() => { throw new TypeError('network down') }, async () => {
+      const err = await call().then(() => null, (e) => e)
+      assert.ok(err instanceof BackendError, 'an unreachable backend must reject, not resolve to sample data')
+    })
+    await withFetch(() => jsonResponse({ detail: 'boom' }, 500), async () => {
+      const err = await call().then(() => null, (e) => e)
+      assert.equal(err?.status, 500)
+    })
+  }
 
   console.log('Page service regression tests passed.')
 } finally {

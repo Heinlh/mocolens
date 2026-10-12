@@ -193,3 +193,17 @@ def test_insights_include_trend_sentence_with_window_label_for_bounded_windows(c
     r = svc.get_dashboard_summary(svc.Filters())
     trend = next(i for i in r.insights if i.id == "trend")
     assert "the last 12 months" in trend.text
+
+
+def test_tied_counts_come_back_in_a_stable_order(con):
+    # The default window holds exactly one crash of each severity and one
+    # participant of each kind - all ties. Without a tiebreak the order is
+    # whatever the aggregate happened to produce, so two identical requests
+    # could disagree (seen against real data: Fatal and Property damage both
+    # at 14 for one filter, swapping places between calls).
+    summary = svc.get_dashboard_summary()
+    assert [c.label for c in summary.severity_breakdown] == ["Fatal", "Injury", "Property damage"]
+    assert [c.label for c in summary.road_user_breakdown] == ["Cyclists", "Drivers", "Pedestrians"]
+    assert [h.area for h in summary.hotspots] == [
+        "Gaithersburg Police", "Montgomery County Police", "Rockville Police",
+    ]

@@ -4,6 +4,7 @@ descriptions, report dates, and provenance - combines the static registry
 and manifest, so "last_updated" reflects an actual run, not a guess.
 """
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -24,13 +25,24 @@ def _latest_api_snapshot_date(domain: str) -> str | None:
     return dated[-1] if dated else None
 
 
+@lru_cache(maxsize=32)
+def _record_count(path: str, mtime_ns: int) -> int:
+    """Records in one raw snapshot file. Cached because counting means parsing
+    the whole file - a few hundred MB across the three datasets - and without
+    it GET /api/sources did that on every request (measured: a 40s median
+    under light load wherever the raw lake is present). Snapshots are
+    immutable; mtime is in the key only so a rewritten file is recounted.
+    """
+    return len(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
 def _api_source_metadata(domain: str, source: dict) -> dict:
     snapshot_date = _latest_api_snapshot_date(domain)
     record_count = None
     if snapshot_date:
         snapshot_path = DATA_DIR / "raw" / "api" / domain / snapshot_date / f"{source['id']}.json"
         if snapshot_path.exists():
-            record_count = len(json.loads(snapshot_path.read_text(encoding="utf-8")))
+            record_count = _record_count(str(snapshot_path), snapshot_path.stat().st_mtime_ns)
     return {
         "id": source["id"],
         "type": "dataset",

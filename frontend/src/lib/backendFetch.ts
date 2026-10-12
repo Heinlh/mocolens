@@ -38,6 +38,13 @@ function getBuildTimeBackendBaseUrl(): string | undefined {
   return normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL)
 }
 
+/** Demo mode: a local dev build with no backend configured. The only state in
+ * which any screen shows sample data, and AppShell labels the whole app while
+ * it is on. A production build can never be in it, and a configured backend
+ * that fails is an error, never a reason to fall back to samples.
+ */
+export const DEMO_MODE = import.meta.env.DEV && !getBuildTimeBackendBaseUrl()
+
 let runtimeBaseUrl: string | null | undefined
 
 /** Vercel Functions read environment variables at runtime. This fallback

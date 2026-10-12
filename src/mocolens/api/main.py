@@ -12,9 +12,13 @@ screen. GET /api/dashboard/summary just runs local DuckDB queries, so its
 limit exists to stop scripted abuse, not to constrain a person clicking
 through filters.
 """
+import json
 import logging
 import os
 import re
+import threading
+import time
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,11 +27,43 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+from ..processing import curate
+from ..retrieval import sql_tool
 from . import dashboard_service, query_service, sources_service
 from .dashboard_service import Filters
 from .schemas import DashboardResponse, MapResponse, QueryResponse, SourcesResponse, TrendsResponse
 
+# Uvicorn configures only its own loggers, so without this every
+# logger.info() in the app - the request log below included - is dropped.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# How many proxies in front of this app append to X-Forwarded-For. 0 keeps
+# the left-most entry, which is right only if the edge discards whatever the
+# client sent. Render's edge is reported to append instead, which makes the
+# left-most entry client-controlled - so set this to the number of trusted
+# hops once it is known. The request log prints `xff_hops` for an ordinary
+# request; that number is the value to use.
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "0"))
+
+# Ceilings on the one endpoint that spends money, neither of which depends on
+# knowing who the caller is. The per-IP limits below are only as good as the
+# IP, and a forged X-Forwarded-For buys a fresh bucket per request.
+# ponytail: the budget is counted in this process's memory, so a restart
+# resets it. It bounds sustained abuse, which keeps the instance awake; the
+# hard backstop is the tokens-per-minute quota on the Azure deployment.
+DAILY_QUERY_BUDGET = int(os.environ.get("DAILY_QUERY_BUDGET", "200"))
+# An agent run holds a worker thread for 6-40s. Uncapped, forty of them fill
+# Starlette's whole thread pool and the dashboard stops answering too. Two,
+# because three in flight was enough to hit the Azure deployment's token rate
+# limit during an evaluation run; raise it together with that quota.
+MAX_CONCURRENT_QUERIES = int(os.environ.get("MAX_CONCURRENT_QUERIES", "2"))
+_BUSY_MESSAGE = "MoCoLens is answering as many questions as it can right now. Please try again in a moment."
+_query_slots = threading.BoundedSemaphore(MAX_CONCURRENT_QUERIES)
+
+
+def _forwarded_chain(request: Request) -> list[str]:
+    return [hop.strip() for hop in request.headers.get("X-Forwarded-For", "").split(",") if hop.strip()]
 
 
 def _client_ip(request: Request) -> str:
@@ -39,15 +75,18 @@ def _client_ip(request: Request) -> str:
     proxy's own IP - identical for every visitor - which collapsed all
     users into a single shared 10/minute + 40/hour bucket.
 
-    A determined client can forge this header to get a fresh bucket. That
-    is the same trade every X-Forwarded-For rate limiter makes, and it is
-    strictly better than the alternative here: one shared bucket means the
-    first ten questions of the hour lock everyone else out.
+    Each trusted proxy appends the address it received the request from, so
+    with N trusted hops the real client is the Nth entry from the right and
+    everything left of it is whatever the client chose to send. With
+    TRUSTED_PROXY_HOPS unset this falls back to the left-most entry: still
+    forgeable, but per-visitor, and one shared bucket is worse. The global
+    budget on /api/query is what holds if this is forged.
     """
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        # Left-most entry is the original client; the rest are proxy hops.
-        return forwarded.split(",")[0].strip()
+    chain = _forwarded_chain(request)
+    if chain:
+        if 0 < TRUSTED_PROXY_HOPS <= len(chain):
+            return chain[-TRUSTED_PROXY_HOPS]
+        return chain[0]
     return request.client.host if request.client else "127.0.0.1"
 
 
@@ -107,7 +146,43 @@ app.add_middleware(
     allow_origin_regex=r"https://mocolens.*\.vercel\.app",
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def trace_request(request: Request, call_next):
+    """One JSON log line per request, and an id that ties it together.
+
+    The id is returned as X-Request-ID and carried into the SQL audit log, so
+    a slow or failed question can be followed from the HTTP request to the
+    queries it ran. duration_ms on every line is also the latency record:
+    percentiles come from these lines (scripts/loadtest.py prints them for a
+    run), not from a metrics service this deployment does not have.
+
+    Registered last so it is the outermost layer and sees rate-limit and
+    CORS responses too.
+    """
+    request_id = uuid.uuid4().hex[:12]
+    sql_tool.request_id.set(request_id)
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        logger.info("request %s", json.dumps({
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": status,
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            # A count, not the addresses: enough to set TRUSTED_PROXY_HOPS
+            # without writing visitors' IPs into the log.
+            "xff_hops": len(_forwarded_chain(request)),
+        }))
 
 
 class QueryRequest(BaseModel):
@@ -142,7 +217,19 @@ def _invalid_question_reason(question: str) -> str | None:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Liveness plus what data this instance is serving.
+
+    build_info.json is written by curation and published only when a refresh
+    passes its checks, so `lastRefresh` is the last *successful* refresh - a
+    monitor can alarm on it going stale without credentials for anything.
+    """
+    info = curate.build_info(dashboard_service.DOMAIN) or {}
+    return {
+        "status": "ok",
+        "lastRefresh": info.get("built_at"),
+        "snapshotDate": info.get("snapshot_date"),
+        "dataThrough": info.get("coverage_end"),
+    }
 
 
 def _dashboard(build, time_range: str, area: str, road_user: str, severity: str):
@@ -213,6 +300,7 @@ def sources(request: Request) -> SourcesResponse:
 
 
 @app.post("/api/query", response_model=QueryResponse, response_model_by_alias=True)
+@limiter.limit(f"{DAILY_QUERY_BUDGET}/day", key_func=lambda request: "everyone")
 @limiter.limit("40/hour")
 @limiter.limit("10/minute")
 def query(request: Request, body: QueryRequest) -> QueryResponse:
@@ -221,6 +309,10 @@ def query(request: Request, body: QueryRequest) -> QueryResponse:
     if invalid_reason:
         raise HTTPException(status_code=400, detail=invalid_reason)
 
+    # Refuse rather than queue: a queued question would sit on "Thinking..."
+    # behind others for minutes, and the client gives up at 120s anyway.
+    if not _query_slots.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail=_BUSY_MESSAGE, headers={"Retry-After": "15"})
     try:
         return query_service.ask(question)
     except RuntimeError as exc:
@@ -228,8 +320,15 @@ def query(request: Request, body: QueryRequest) -> QueryResponse:
         # problem, not something the client did wrong.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
+        # The model provider throttling us is "busy", not "broken": the same
+        # question will work in a moment, and the client should be told so.
+        if getattr(exc, "status_code", None) == 429:
+            logger.warning("Model provider rate limit hit for question: %s", question)
+            raise HTTPException(status_code=503, detail=_BUSY_MESSAGE, headers={"Retry-After": "30"}) from exc
         # Never leak internals (stack traces, tool SQL, credentials) to the
         # client for an unexpected failure - log it server-side, return a
         # generic message.
         logger.exception("Agent run failed for question: %s", question)
         raise HTTPException(status_code=500, detail="The agent failed to answer this question.") from exc
+    finally:
+        _query_slots.release()

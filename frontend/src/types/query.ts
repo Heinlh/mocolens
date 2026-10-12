@@ -22,9 +22,3 @@ export interface QueryResponse {
   limitations?: string[]
   dataAsOf?: string
 }
-
-export interface ConversationEntry {
-  id: string
-  question: string
-  askedAt: string
-}

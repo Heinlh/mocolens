@@ -20,7 +20,11 @@ client = TestClient(app)
 def test_health():
     r = client.get("/api/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    body = r.json()
+    assert body["status"] == "ok"
+    # The last successful refresh, so staleness can be monitored from outside.
+    assert body["lastRefresh"].startswith("20")
+    assert body["snapshotDate"] and body["dataThrough"]
 
 
 def test_dashboard_summary_status_and_shape():
@@ -46,20 +50,19 @@ def test_metrics_has_four_kpi_cards_with_real_values():
         assert m["value"] > 0  # real trailing-12mo data always has some crashes
 
 
-def test_severity_breakdown_matches_known_real_totals_all_time():
-    # Exact counts verified independently in PROJECT_STATUS.txt / the
-    # curation layer's own tests - if these ever drift, the pipeline
-    # changed underneath this endpoint. severity_breakdown is windowed by
-    # time_range like everything else on this endpoint (it used to
-    # silently ignore the window, inconsistent with the KPI cards right
-    # next to it) - request "All time" explicitly to check the known
-    # stable totals rather than whatever the trailing-12mo window holds
-    # today, which shifts as new data is ingested.
+def test_severity_breakdown_all_time_accounts_for_every_dated_crash():
+    # Checked against the database rather than pinned totals: the refresh
+    # workflow rebuilds the curated tables before it runs this suite, and
+    # the county adds crashes every week, so "All time" is not stable and a
+    # hard-coded count fails the first refresh after it is written.
+    from mocolens.api import dashboard_service
+
     data = client.get("/api/dashboard/summary?time_range=All time").json()
     by_label = {c["label"]: c["value"] for c in data["severityBreakdown"]}
-    assert by_label["Property damage"] == 82463
-    assert by_label["Injury"] == 41904
-    assert by_label["Fatal"] == 402
+    assert {"Property damage", "Injury", "Fatal"} <= set(by_label)
+    with dashboard_service._connect() as con:
+        dated = con.execute("SELECT COUNT(crash_date) FROM fact_crashes").fetchone()[0]
+    assert sum(by_label.values()) == dated
 
 
 def test_severity_breakdown_respects_default_window_not_all_time():

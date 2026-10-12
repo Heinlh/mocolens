@@ -192,6 +192,43 @@ def test_reused_sandbox_still_refuses_file_access():
     assert r["rows"] == []
 
 
+def test_memory_hungry_query_fails_cleanly_instead_of_exhausting_the_host(monkeypatch):
+    # Nine million distinct strings through a GROUP BY: valid SQL, passes
+    # every validation, and without the engine limit grows until the OS kills
+    # the process. The generous timeout proves it is the memory limit, not
+    # the watchdog, that stops it.
+    monkeypatch.setattr(sql_tool, "SANDBOX_MEMORY_LIMIT", "32MB")
+    r = sql_tool.query_analytics(
+        question="x", reason="attack test", timeout_seconds=60,
+        sql="SELECT k, COUNT(*) FROM (SELECT a.range::VARCHAR || '-' || b.range::VARCHAR AS k "
+            "FROM range(3000) a, range(3000) b) GROUP BY 1",
+    )
+    assert r["error"] is not None
+    assert "memory" in r["error"].lower()
+    # One query running out of memory must not take the sandbox with it.
+    assert sql_tool.query_analytics(
+        question="x", sql="SELECT COUNT(*) FROM fact_crashes", reason="r",
+    )["rows"] == [[3]]
+
+
+def test_sandbox_limits_cannot_be_raised_from_a_cursor():
+    cursor = sql_tool._sandbox("vision_zero").cursor()
+    for statement in ("SET memory_limit = '64GB'", "SET threads = 64"):
+        with pytest.raises(duckdb.Error):
+            cursor.execute(statement)
+
+
+def test_audit_entry_carries_the_request_id_when_one_is_set():
+    import json
+    token = sql_tool.request_id.set("req-123")
+    try:
+        sql_tool.query_analytics(question="q", sql="SELECT 1", reason="r")
+    finally:
+        sql_tool.request_id.reset(token)
+    entry = json.loads(sql_tool.AUDIT_LOG.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert entry["request_id"] == "req-123"
+
+
 def test_reused_sandbox_cannot_be_unlocked_by_a_later_query():
     sql_tool.query_analytics(question="x", sql="SET enable_external_access = true", reason="r")
     r = sql_tool.query_analytics(

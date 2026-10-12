@@ -205,8 +205,8 @@ def test_map_over_a_filter_with_too_little_data_returns_nothing_rather_than_nois
     )
     assert response.hotspots == []
     assert response.ranked_areas == []
-    # The "most affected location" card cannot exist without a hotspot...
-    assert all(card.label != "Most affected location" for card in response.summary_cards)
+    # The "most crashes recorded" card cannot exist without a hotspot...
+    assert all(card.label != "Most crashes recorded" for card in response.summary_cards)
 
 
 @requires_curated

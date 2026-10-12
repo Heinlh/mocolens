@@ -32,17 +32,33 @@ def query_analytics(question: str, sql: str, reason: str) -> dict:
         road_name, agency_name, route_type, hit_run, severity
         ['property_damage'|'injury'|'fatal'], collision_type, weather,
         light_condition, surface_condition, pedestrian_involved,
-        cyclist_involved, fatality_count, injury_count)
+        cyclist_involved, fatality_count, injury_count, community)
       fact_participants(participant_id, crash_id, participant_type
         ['driver'|'pedestrian'|'cyclist'|'other_non_motorist'|
         'unknown_non_motorist'], injury_severity, at_fault)
       dim_date(date, year, quarter, month, day_of_week)
 
     Data notes that change what a correct query looks like:
-      - There is no municipality, neighborhood, or community column.
-        agency_name is the reporting police agency (five values, the large
-        majority "Montgomery County Police"), so it is a weak stand-in for
-        "area"; road_name plus latitude/longitude is the usable geography.
+      - community is the Census place (city, town, or census-designated
+        place) the crash's coordinates fall inside: 'Silver Spring',
+        'Bethesda', 'Rockville', 'Gaithersburg', 'Germantown', 'Wheaton',
+        'North Bethesda', 'Aspen Hill', 'Potomac', 'Takoma Park' and about
+        seventy more. Use it for any question about a named place; never
+        define a place with a latitude/longitude box or a road-name match of
+        your own. It is NULL for about 8% of crashes (rural areas outside
+        every named place, and rows with no usable coordinates), so exclude
+        NULL when ranking communities. These are Census boundaries, which
+        are tighter than everyday or postal usage - a "Silver Spring"
+        mailing address covers far more than the Silver Spring place - so
+        say the count uses the Census boundary. If a place name matches no
+        community, say so rather than substituting a nearby one.
+      - agency_name is the reporting police agency (five values, the large
+        majority "Montgomery County Police"), not a place.
+      - fact_participants has several rows per crash. Counting crashes
+        through a join to it needs COUNT(DISTINCT crash_id) - COUNT(*) counts
+        people, so a crash with two pedestrians counts twice. For "did this
+        crash involve a pedestrian or cyclist", skip the join and use
+        pedestrian_involved / cyclist_involved on fact_crashes.
       - Crash counts have no traffic-volume denominator. Most roads in the
         table carry only one or two recorded crashes because they are short
         or lightly travelled, not because they are safe - never read a low
@@ -61,6 +77,15 @@ def query_analytics(question: str, sql: str, reason: str) -> dict:
         intersection variants of the same road.
       - Coverage starts in 2015 and the most recent year is partial, so a
         year-over-year comparison that includes it will understate it.
+      - The police feed switched code lists on 2024-01-01 for weather,
+        light_condition, collision_type, surface_condition and route_type,
+        so one condition has two spellings: 'RAINING' before 2024 and
+        'RAIN' from 2024; 'DARK LIGHTS ON' and 'DARK - LIGHTED'; 'SAME DIR
+        REAR END' and 'FRONT TO REAR'; 'County' and 'County Route'. A
+        filter on one spelling silently returns zero for the other era, and
+        a count grouped by these columns splits one category in two. Match
+        on the shared stem (ILIKE 'RAIN%', 'DARK%', '%REAR%'), or SELECT
+        DISTINCT the column first, and say so if a comparison crosses 2024.
 
     `question` states what you're trying to find out and `reason` explains
     why this query answers it - both are logged for audit, not optional

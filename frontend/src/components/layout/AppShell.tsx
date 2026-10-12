@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Menu, X } from 'lucide-react'
+import { DEMO_MODE } from '@/lib/backendFetch'
 import { Sidebar } from './Sidebar'
 
 interface AppShellProps {
@@ -13,6 +14,12 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="min-h-screen bg-bg text-text">
+      {DEMO_MODE && (
+        <p role="status" className="border-b border-danger/40 bg-danger/10 px-4 py-2 text-center text-xs font-medium text-text">
+          Demo mode: no backend is configured, so the Dashboard and Ask screens show sample data, not real county
+          statistics. Set VITE_API_BASE_URL to use live data.
+        </p>
+      )}
       <div className="flex items-center justify-between border-b border-border px-4 py-3 md:hidden">
         <button
           type="button"

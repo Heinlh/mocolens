@@ -4,16 +4,7 @@
  * Montgomery County crash statistics.
  */
 import type { Hotspot } from '@/types/analytics'
-import type { ConversationEntry, QueryResponse } from '@/types/query'
-
-/** Sidebar "Recent questions" list. askedAt is a display-ready relative label for this prototype. */
-export const mockRecentQuestions: ConversationEntry[] = [
-  { id: 'q1', question: 'Have pedestrian crashes increased in Silver Spring since 2022?', askedAt: 'Just now' },
-  { id: 'q2', question: 'Pedestrian crashes in Silver Spring vs. Bethesda', askedAt: '2h ago' },
-  { id: 'q3', question: 'Crash hotspots in the county', askedAt: '1d ago' },
-  { id: 'q4', question: 'What is the county doing about dangerous roads?', askedAt: '2d ago' },
-  { id: 'q5', question: 'Cyclists vs pedestrians in severe crashes', askedAt: '5d ago' },
-]
+import type { QueryResponse } from '@/types/query'
 
 /** Illustrative intersection-level clusters within Silver Spring for the zoomed mini map. */
 export const mockSilverSpringFocusHotspots: Hotspot[] = [

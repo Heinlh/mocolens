@@ -26,6 +26,9 @@ each layer was verified empirically (see PROJECT_STATUS.txt), not assumed:
    row count regardless of what the inner query does.
 5. A watchdog thread calls `connection.interrupt()` after a timeout -
    confirmed this actually aborts a running query, not just the wait.
+6. The engine itself is capped (memory_limit, threads) and its
+   configuration locked. The timeout alone does not bound memory: a query
+   can allocate gigabytes well inside ten seconds.
 
 Even if one of these had a gap, the others still hold - this is
 defense in depth, not one clever trick.
@@ -40,14 +43,18 @@ enable_external_access back on) but owns its own interrupt, so one query
 timing out cannot abort another running alongside it.
 """
 import json
+import logging
 import re
 import threading
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
 
 from ..processing.curate import data_as_of as curated_data_as_of
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path("data")
 AUDIT_LOG = Path("logs/retrieval/sql_queries.jsonl")
@@ -71,6 +78,16 @@ _DISALLOWED_KEYWORDS_RE = re.compile(
 
 MAX_ROWS_DEFAULT = 500
 TIMEOUT_SECONDS_DEFAULT = 10.0
+# The loaded tables take ~57 MB of this; the rest is working memory for a
+# query. Sized for the 512 MB instance: the rest of the serving path peaks
+# near 250 MB, so this bounds the whole process around 410 MB. Ordinary
+# agent queries run fine at 96 MB.
+SANDBOX_MEMORY_LIMIT = "160MB"
+SANDBOX_THREADS = 2
+
+# Set by the API per request so an audit entry can be matched to the HTTP
+# request that caused it. None outside a request (scripts, tests).
+request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 # Keyed by data directory as well as domain: DATA_DIR is monkeypatched per
 # test, and a sandbox built from a different directory holds different rows.
@@ -105,9 +122,20 @@ def _build_sandbox(domain: str) -> duckdb.DuckDBPyConnection:
         from ..storage.duckdb_store import create_dim_date_view
         create_dim_date_view(con)
 
+    # DuckDB's defaults are 80% of the host's RAM and every core. Measured
+    # without a limit: one valid SELECT (a cross join feeding a GROUP BY)
+    # took this process from 88 MB to 4.2 GB before the 10s watchdog fired -
+    # an OOM kill on a 512 MB instance, from a query that passes every check
+    # below. With the limit the same query fails in ~2s as an ordinary
+    # "query failed" result and the sandbox stays usable.
+    con.execute(f"SET memory_limit = '{SANDBOX_MEMORY_LIMIT}'")
+    con.execute(f"SET threads = {SANDBOX_THREADS}")
     # From here on the connection cannot read or write any file, attach any
-    # database, or have this setting flipped back by a later statement.
+    # database, or have any of these settings changed by a later statement -
+    # lock_configuration covers the two limits above (verified: a cursor
+    # could otherwise SET memory_limit back up).
     con.execute("SET enable_external_access = false")
+    con.execute("SET lock_configuration = true")
     return con
 
 
@@ -161,9 +189,13 @@ def _run_with_timeout(con: duckdb.DuckDBPyConnection, sql: str, timeout_seconds:
 
 
 def _log(entry: dict) -> None:
+    line = json.dumps(entry)
+    # Also to the process log: the file below lives on the container's
+    # ephemeral disk, which nobody can read on the deployed instance.
+    logger.info("sql_audit %s", line)
     AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
     with AUDIT_LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+        f.write(line + "\n")
 
 
 def query_analytics(
@@ -183,6 +215,7 @@ def query_analytics(
     programmer errors (unknown domain, curated tables not built yet).
     """
     audit_entry = {
+        "request_id": request_id.get(),
         "domain": domain, "question": question, "sql": sql, "reason": reason,
         "asked_at": datetime.now(timezone.utc).isoformat(),
     }

@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Landmark, Shield } from 'lucide-react'
 import { NEW_QUESTION_ICON, NEW_QUESTION_PATH, SIDEBAR_NAV_ITEMS } from '@/constants/navigation'
-import { getRecentQuestions } from '@/services/queryService'
-import type { ConversationEntry } from '@/types/query'
+import { ASK_HOME_SUGGESTED_PROMPTS } from '@/constants/prompts'
 import { buildAskResultPath } from '@/lib/askRoute'
 
 interface SidebarProps {
@@ -14,19 +12,14 @@ interface SidebarProps {
 export function Sidebar({ onNavigate }: SidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
-  const [recentQuestions, setRecentQuestions] = useState<ConversationEntry[]>([])
   const NewQuestionIcon = NEW_QUESTION_ICON
-
-  useEffect(() => {
-    getRecentQuestions().then(setRecentQuestions)
-  }, [])
 
   function handleNewQuestion() {
     navigate(NEW_QUESTION_PATH)
     onNavigate?.()
   }
 
-  function handleRecentQuestionClick(question: string) {
+  function handleExampleClick(question: string) {
     navigate(buildAskResultPath(question))
     onNavigate?.()
   }
@@ -76,23 +69,20 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         })}
       </nav>
 
+      {/* Examples, labelled as examples. This list used to be a fixed set of
+          "recent questions" with invented timestamps, which read as the
+          visitor's own history on a live site. */}
       <div className="mt-6">
-        <div className="flex items-center justify-between px-1">
-          <span className="text-xs font-semibold uppercase tracking-wide text-text-muted">Recent questions</span>
-          <Link to="/dashboard" className="text-xs font-medium text-accent hover:underline">
-            View all
-          </Link>
-        </div>
+        <span className="px-1 text-xs font-semibold uppercase tracking-wide text-text-muted">Example questions</span>
         <ul className="mt-2 flex flex-col gap-0.5">
-          {recentQuestions.map((entry) => (
-            <li key={entry.id}>
+          {ASK_HOME_SUGGESTED_PROMPTS.map((question) => (
+            <li key={question}>
               <button
                 type="button"
-                onClick={() => handleRecentQuestionClick(entry.question)}
-                className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
+                onClick={() => handleExampleClick(question)}
+                className="w-full truncate rounded-lg px-3 py-2 text-left text-sm text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
               >
-                <span className="truncate">{entry.question}</span>
-                <span className="shrink-0 text-xs text-text-muted">{entry.askedAt}</span>
+                {question}
               </button>
             </li>
           ))}

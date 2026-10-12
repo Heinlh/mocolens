@@ -7,15 +7,16 @@
  * reshaping happens here. Filters are real query params the backend
  * actually applies in SQL, not a client-side illusion.
  *
- * Unconfigured local development can use mock data. Production configuration,
- * network, rate-limit, and server errors throw BackendError so the UI never
- * silently substitutes unrelated demo data.
+ * Sample data is returned only in DEMO_MODE (local dev, no backend
+ * configured), where the whole app is labelled as a demo. Every other
+ * failure throws BackendError so the UI never silently substitutes
+ * unrelated demo data.
  *
  * getHotspots() calls GET /api/dashboard/map and has no mock fallback: the
  * Hotspots page is entirely about where crashes really are, so prototype
  * coordinates there would be worse than an error message.
  */
-import { backendFetch, BackendConfigurationError, BackendError } from '@/lib/backendFetch'
+import { backendFetch, BackendError, DEMO_MODE } from '@/lib/backendFetch'
 import { mockDashboard } from '@/data/mock/dashboard'
 import type { DashboardFilters, DashboardResponse, HotspotsResponse } from '@/types/analytics'
 
@@ -31,11 +32,11 @@ function toQuery(filters: DashboardFilters | undefined): string {
 }
 
 export async function getDashboardOverview(filters?: DashboardFilters): Promise<DashboardResponse> {
+  if (DEMO_MODE) return mockDashboard
   try {
     const res = await backendFetch(`/api/dashboard/summary${toQuery(filters)}`)
     return (await res.json()) as DashboardResponse
   } catch (err) {
-    if (import.meta.env.DEV && err instanceof BackendConfigurationError) return mockDashboard
     if (err instanceof BackendError) throw err
     throw new BackendError(0, 'The live data service could not be reached. Please try again shortly.')
   }

@@ -272,3 +272,116 @@ def test_hard_checks_all_pass_on_valid_structural_data(built):
 def test_report_not_ok_when_any_check_has_violations(built):
     _, report = built
     assert report.ok is False  # soft violations were seeded on purpose
+
+
+# --- community tagging (point-in-polygon against Census place boundaries) ---
+
+def _tag(con, points):
+    """Run _tag_communities over (crash_id, latitude, longitude) rows."""
+    from mocolens.processing.quality import QualityReport
+
+    con.execute("CREATE OR REPLACE TABLE fact_crashes (crash_id VARCHAR, latitude DOUBLE, longitude DOUBLE, agency_name VARCHAR)")
+    con.executemany("INSERT INTO fact_crashes VALUES (?, ?, ?, NULL)", points)
+    report = QualityReport()
+    vision_zero._tag_communities(con, report)
+    return dict(con.execute("SELECT crash_id, community FROM fact_crashes").fetchall()), report
+
+
+def test_real_landmarks_fall_in_the_communities_they_are_in():
+    # Each expectation was confirmed independently with DuckDB spatial's
+    # ST_Contains on the original Census polygons, not read off this code.
+    tagged, _ = _tag(duckdb.connect(":memory:"), [
+        ("silver-spring-metro", 38.9940, -77.0312),
+        ("rockville-town-square", 39.0862, -77.1516),
+        ("bethesda-row", 38.9812, -77.0968),
+        ("germantown-town-center", 39.1812, -77.2640),
+        ("takoma-park", 38.9779, -77.0075),
+        ("agricultural-reserve", 39.2000, -77.4500),
+        ("no-coordinates", None, None),
+    ])
+    assert tagged == {
+        "silver-spring-metro": "Silver Spring",
+        "rockville-town-square": "Rockville",
+        "bethesda-row": "Bethesda",
+        "germantown-town-center": "Germantown",
+        "takoma-park": "Takoma Park",
+        "agricultural-reserve": None,  # open country, inside no named place
+        "no-coordinates": None,
+    }
+
+
+@pytest.fixture
+def toy_boundaries(tmp_path, monkeypatch):
+    """One place, "Ring Town": a 10x10 square with a 2x2 hole in the middle,
+    plus a detached 2x2 part to the east - the shapes real places come in.
+    """
+    def ring(ring_id, corners):
+        closed = corners + [corners[0]]
+        return [("Ring Town", "town", ring_id, seq, lon, lat) for seq, (lon, lat) in enumerate(closed)]
+
+    rows = (
+        ring(1, [(0, 0), (10, 0), (10, 10), (0, 10)])
+        + ring(2, [(4, 4), (6, 4), (6, 6), (4, 6)])       # the hole
+        + ring(3, [(20, 0), (22, 0), (22, 2), (20, 2)])   # the detached part
+    )
+    path = tmp_path / "boundaries.parquet"
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE v (community VARCHAR, kind VARCHAR, ring INTEGER, seq INTEGER, lon DOUBLE, lat DOUBLE)")
+    con.executemany("INSERT INTO v VALUES (?, ?, ?, ?, ?, ?)", rows)
+    con.execute(f"COPY v TO '{path.as_posix()}' (FORMAT PARQUET)")
+    con.close()
+    monkeypatch.setattr(vision_zero, "BOUNDARIES_PATH", path)
+    return path
+
+
+def test_holes_detached_parts_and_vertex_grazing_rays_are_all_handled(toy_boundaries):
+    tagged, report = _tag(duckdb.connect(":memory:"), [
+        ("inside", 2.0, 2.0),
+        ("in-the-hole", 5.0, 5.0),
+        ("outside-west", 5.0, -1.0),
+        ("outside-east", 5.0, 15.0),
+        ("detached-part", 1.0, 21.0),
+        # A ray east from here runs exactly along the hole's bottom edge and
+        # through two of its corners - the case naive ray casting miscounts.
+        ("level-with-hole-corners", 4.0, 2.0),
+        # ...and this one passes through the outer square's own top corners.
+        ("level-with-top-edge", 10.0, 2.0),
+    ])
+    assert tagged == {
+        "inside": "Ring Town",
+        "in-the-hole": None,
+        "outside-west": None,
+        "outside-east": None,
+        "detached-part": "Ring Town",
+        "level-with-hole-corners": "Ring Town",
+        "level-with-top-edge": None,  # the top edge itself is outside (half-open)
+    }
+    assert {c.name: c.violations for c in report.checks}["located_crash_outside_every_community"] == 4
+
+
+def test_tagging_keeps_exactly_one_row_per_crash(toy_boundaries):
+    con = duckdb.connect(":memory:")
+    _tag(con, [("a", 2.0, 2.0), ("b", 50.0, 50.0), ("c", None, None)])
+    assert con.execute("SELECT COUNT(*), COUNT(DISTINCT crash_id) FROM fact_crashes").fetchone() == (3, 3)
+
+
+def test_missing_boundary_file_stops_the_build_with_the_script_to_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(vision_zero, "BOUNDARIES_PATH", tmp_path / "nope.parquet")
+    with pytest.raises(FileNotFoundError, match="build_community_boundaries"):
+        _tag(duckdb.connect(":memory:"), [("a", 39.0, -77.0)])
+
+
+def test_a_boundary_file_that_matches_nothing_fails_the_build(toy_boundaries):
+    # Real coordinates against the toy file: nothing can match, which is what
+    # a boundary file with latitude and longitude swapped looks like. Shipping
+    # a table whose community column is silently all NULL would be worse.
+    from mocolens.processing.quality import QualityError
+
+    with pytest.raises(QualityError, match="community_tagging_matched_nothing"):
+        _tag(duckdb.connect(":memory:"), [("a", 39.0, -77.0), ("b", 39.1, -77.1)])
+
+
+def test_curated_crashes_carry_a_community_column(built):
+    con, _ = built
+    columns = [row[0] for row in con.execute("DESCRIBE fact_crashes").fetchall()]
+    assert columns[-1] == "community"

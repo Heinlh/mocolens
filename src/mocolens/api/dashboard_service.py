@@ -277,7 +277,10 @@ def _severity_breakdown(con, window: Window, filters: Filters) -> list[schemas.C
     params += window_params
     where = " AND ".join(clauses) if clauses else "TRUE"
     rows = con.execute(
-        f"SELECT severity, COUNT(*) FROM fact_crashes WHERE {where} GROUP BY severity ORDER BY 2 DESC", params
+        # Tiebreak on the label: two categories with equal counts otherwise
+        # come back in whatever order the parallel aggregate finished, so the
+        # same request could draw its bars in a different order each time.
+        f"SELECT severity, COUNT(*) FROM fact_crashes WHERE {where} GROUP BY severity ORDER BY 2 DESC, 1", params
     ).fetchall()
     return [schemas.CategoryValue(label=_SEVERITY_LABELS.get(sev, sev), value=count) for sev, count in rows]
 
@@ -305,7 +308,7 @@ def _road_user_breakdown(con, window: Window, filters: Filters) -> list[schemas.
         merged[label] = merged.get(label, 0) + count
     return [
         schemas.CategoryValue(label=label, value=round(count / total * 100, 1))
-        for label, count in sorted(merged.items(), key=lambda kv: -kv[1])
+        for label, count in sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 
 
@@ -351,7 +354,7 @@ def _hotspots(con, window: Window, filters: Filters) -> list[schemas.Hotspot]:
             trend=trend,
             intensity=round(count / max_count, 3),
         ))
-    hotspots.sort(key=lambda h: -h.crash_count)
+    hotspots.sort(key=lambda h: (-h.crash_count, h.area))
     return hotspots
 
 
@@ -501,7 +504,7 @@ def _cell_hotspots(con, window: Window, filters: Filters) -> list[schemas.Hotspo
             SELECT lat_cell, lon_cell, COUNT(*) AS crash_count,
                    AVG(latitude) AS latitude, AVG(longitude) AS longitude
             FROM located GROUP BY 1, 2
-            HAVING COUNT(*) >= ? ORDER BY crash_count DESC LIMIT ?
+            HAVING COUNT(*) >= ? ORDER BY crash_count DESC, lat_cell, lon_cell LIMIT ?
         ), roads AS (
             SELECT lat_cell, lon_cell, road_name,
                    ROW_NUMBER() OVER (
@@ -518,7 +521,7 @@ def _cell_hotspots(con, window: Window, filters: Filters) -> list[schemas.Hotspo
         LEFT JOIN roads second_road
                ON (second_road.lat_cell, second_road.lon_cell, second_road.road_rank)
                 = (c.lat_cell, c.lon_cell, 2)
-        ORDER BY c.crash_count DESC
+        ORDER BY c.crash_count DESC, c.lat_cell, c.lon_cell
     """, [grid, grid] + params + window_params + [HOTSPOT_MIN_CRASHES, HOTSPOT_LIMIT]).fetchall()
 
     if not rows:
@@ -603,7 +606,7 @@ def _common_collision_type(con, window: Window, filters: Filters) -> tuple[str, 
     row = con.execute(f"""
         SELECT collision_type, COUNT(*) FROM fact_crashes
         WHERE {where} AND collision_type IS NOT NULL AND collision_type <> 'OTHER'
-        GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+        GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1
     """, params).fetchone()
     if row is None:
         return None
@@ -624,7 +627,9 @@ def _summary_cards(
     if hotspots:
         top = hotspots[0]
         cards.append(schemas.HotspotSummaryCard(
-            label="Most affected location",
+            # "Most crashes", not "most affected" or "most dangerous": this
+            # is a count, with nothing to say how much traffic passes through.
+            label="Most crashes recorded",
             # No "share of all county crashes" here: these are the top cells,
             # not a partition of the county, so a percentage taken across them
             # would describe the cells rather than the county.

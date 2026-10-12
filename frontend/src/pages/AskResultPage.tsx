@@ -14,9 +14,8 @@ import { isInsightSaved, saveInsight } from '@/lib/savedInsights'
 
 const DEFAULT_QUESTION = 'Have pedestrian crashes increased in Silver Spring since 2022?'
 
-/** Plain-language message for a real (reachable-backend) rejection - never
- * shown for "backend unreachable", which falls back to mock data instead
- * and never reaches this component as an error at all.
+/** Plain-language message for any failed question, an unreachable backend
+ * included - nothing here falls back to sample data.
  */
 function describeError(err: unknown): string {
   if (err instanceof BackendConfigurationError) return err.message

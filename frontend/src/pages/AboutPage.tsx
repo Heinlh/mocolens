@@ -13,8 +13,13 @@ export function AboutPage() {
             answers grounded in public crash data and county reports, with sources always shown.
           </p>
           <p className="mt-3">
-            This is a prototype under active development. Data shown throughout the application is mocked while the
-            data ingestion, analytics, and agentic retrieval backend is being built.
+            Crash figures come from Montgomery County&apos;s open police crash records, and report passages are quoted
+            from the county&apos;s Vision Zero publications. Both are checked for updates every week; the Sources page
+            lists every dataset and document with the date it was last updated.
+          </p>
+          <p className="mt-3">
+            This is a prototype under active development. Crash counts are not adjusted for how much traffic a road
+            carries, so a higher count does not by itself mean a more dangerous road.
           </p>
         </Card>
       </div>

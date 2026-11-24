@@ -19,9 +19,12 @@ import re
 import threading
 import time
 import uuid
+from contextvars import copy_context
+from queue import Queue
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -299,6 +302,48 @@ def sources(request: Request) -> SourcesResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+STREAM_TYPE = "application/x-ndjson"
+
+
+def _stream_response(question: str, cached: QueryResponse | None):
+    events = Queue()
+    events.put({"type": "ready"})
+    if cached is not None:
+        events.put({"type": "done", "response": cached.model_dump(by_alias=True),
+                    "plannerCalls": 0, "finalizerCalls": 0, "modelCalls": 0})
+    else:
+        # A started run owns its slot until it finishes, even if the reader
+        # disconnects. The completed answer remains available for a retry.
+        def produce():
+            try:
+                query_service.stream_answer(question, events.put)
+            except Exception as exc:
+                logger.exception("Streaming query failed")
+                message = _BUSY_MESSAGE if getattr(exc, "status_code", None) == 429 else "The agent failed to answer this question."
+                events.put({"type": "error", "message": message})
+            finally:
+                _query_slots.release()
+
+        context = copy_context()
+        try:
+            threading.Thread(target=context.run, args=(produce,), daemon=True).start()
+        except BaseException:
+            _query_slots.release()
+            raise
+
+    def lines():
+        while True:
+            event = events.get()
+            yield json.dumps(event, separators=(",", ":")) + "\n"
+            if event["type"] in {"done", "error"}:
+                return
+
+    return StreamingResponse(lines(), media_type=STREAM_TYPE, headers={
+        "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no",
+        "X-Answer-Cache": "hit" if cached else "miss",
+    })
+
+
 @app.post("/api/query", response_model=QueryResponse, response_model_by_alias=True)
 @limiter.limit(f"{DAILY_QUERY_BUDGET}/day", key_func=lambda request: "everyone")
 @limiter.limit("40/hour")
@@ -310,7 +355,11 @@ def query(request: Request, body: QueryRequest, response: Response) -> QueryResp
         raise HTTPException(status_code=400, detail=invalid_reason)
 
     cached = query_service.cached_answer(question)
+    streaming = STREAM_TYPE in request.headers.get("accept", "")
     if cached is not None:
+        logger.info("agent_trace %s", json.dumps({"request_id": sql_tool.request_id.get(), "modelCalls": 0, "cache": "hit"}))
+        if streaming:
+            return _stream_response(question, cached)
         response.headers["X-Answer-Cache"] = "hit"
         return cached
     response.headers["X-Answer-Cache"] = "miss"
@@ -319,6 +368,8 @@ def query(request: Request, body: QueryRequest, response: Response) -> QueryResp
     # behind others for minutes, and the client gives up at 120s anyway.
     if not _query_slots.acquire(blocking=False):
         raise HTTPException(status_code=503, detail=_BUSY_MESSAGE, headers={"Retry-After": "15"})
+    if streaming:
+        return _stream_response(question, None)
     try:
         return query_service.ask(question)
     except RuntimeError as exc:

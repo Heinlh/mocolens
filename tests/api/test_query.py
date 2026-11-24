@@ -60,6 +60,49 @@ BASE_ANSWER = AgentAnswer(
 )
 
 
+def test_cache_keys_preserve_meaningful_question_differences():
+    key = query_service._answer_key
+    assert key(" Road   safety in 2025 ?! ") == key("road safety in 2025.")
+    assert key("road safety in 2024?") != key("road safety in 2025?")
+    assert key("rate over 2%?") != key("rate over 2?")
+
+
+@patch("mocolens.api.query_service.agent_graph.run")
+def test_stream_cache_shared_with_json_and_echoes_current_question(run):
+    def generate(question, emit):
+        emit({"type": "text", "answer": "Y", "summary": ""})
+        return {"final": BASE_ANSWER, "messages": [], "planner_ms": [7, 9]}
+
+    run.side_effect = generate
+    headers = {"Accept": "application/x-ndjson"}
+    def send(question):
+        r = client.post("/api/query", json={"question": question}, headers=headers)
+        assert r.status_code == 200
+        return [json.loads(line) for line in r.text.splitlines()]
+
+    frames = send("How many crashes?")
+    assert [f["type"] for f in frames] == ["ready", "text", "done"]
+    assert frames[-1]["modelCalls"] == 3
+    repeat = send("HOW   MANY crashes!")
+    assert [f["type"] for f in repeat] == ["ready", "done"]
+    assert repeat[-1]["modelCalls"] == 0
+    assert repeat[-1]["response"]["question"] == "HOW   MANY crashes!"
+    legacy = client.post("/api/query", json={"question": "how many crashes"})
+    assert legacy.headers["X-Answer-Cache"] == "hit"
+    assert legacy.json()["answer"] == BASE_ANSWER.answer
+    assert run.call_count == 1
+
+
+@patch("mocolens.api.query_service.agent_graph.run", side_effect=ValueError("private details"))
+def test_stream_failure_releases_capacity_and_is_not_cached(run):
+    for _ in range(3):
+        r = client.post("/api/query", json={"question": "How many crashes?"},
+                        headers={"Accept": "application/x-ndjson"})
+        assert r.headers["X-Answer-Cache"] == "miss"
+        assert json.loads(r.text.splitlines()[-1])["type"] == "error"
+        assert "private details" not in r.text
+
+
 @patch("mocolens.api.query_service.agent_graph.run")
 def test_repeat_serves_same_evidence_with_new_id_and_refresh_invalidates(mock_run, tmp_path, monkeypatch):
     build = tmp_path / "build_info.json"

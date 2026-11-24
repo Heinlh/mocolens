@@ -31,10 +31,10 @@ class _LazyAgentGraph:
     """
 
     @staticmethod
-    def run(question: str):
+    def run(question: str, **kwargs):
         from ..agent import graph
 
-        return graph.run(question)
+        return graph.run(question, **kwargs)
 
 
 agent_graph = _LazyAgentGraph()
@@ -53,7 +53,8 @@ def _answer_key(question: str) -> tuple:
         metadata_tool.CONFIG_PATH, raw / "documents" / DOMAIN / "manifest.jsonl",
         raw / "api" / DOMAIN,
     )
-    return question, tuple(file_revision(path) for path in inputs)
+    normalized = " ".join(question.lower().split()).rstrip(" .!?")
+    return normalized, tuple(file_revision(path) for path in inputs)
 
 
 def cached_answer(question: str) -> schemas.QueryResponse | None:
@@ -64,6 +65,7 @@ def cached_answer(question: str) -> schemas.QueryResponse | None:
         return None
     response = schemas.QueryResponse.model_validate_json(payload)
     response.id = str(uuid.uuid4())
+    response.question = question
     return response
 
 
@@ -205,6 +207,19 @@ def _to_response(question: str, answer: AgentAnswer, messages: list) -> schemas.
 def ask(question: str) -> schemas.QueryResponse:
     key = _answer_key(question)
     result = agent_graph.run(question)
+    return _finish(question, key, result)
+
+
+def stream_answer(question, emit):
+    from ..agent.graph import trace
+
+    key = _answer_key(question)
+    result = agent_graph.run(question, emit=emit)
+    response = _finish(question, key, result)
+    emit({"type": "done", "response": response.model_dump(by_alias=True), **trace(result)})
+
+
+def _finish(question, key, result) -> schemas.QueryResponse:
     messages = result["messages"]
     response = _to_response(question, result["final"], messages)
     # Tool failures can reach finalization as ordinary messages. Let the

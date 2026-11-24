@@ -85,7 +85,9 @@ export async function backendFetch(path: string, init?: RequestInit): Promise<Re
   try {
     response = await fetch(await resolveBackendUrl(path), {
       ...init,
-      signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
+        : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   } catch (err) {
     if (err instanceof BackendError) throw err

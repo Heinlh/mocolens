@@ -127,6 +127,27 @@ try {
   const { ask } = await server.ssrLoadModule('/src/services/queryService.ts')
   assert.equal(DEMO_MODE, false, 'a configured backend must never be demo mode')
 
+  const frames = [
+    { type: 'ready' }, { type: 'text', answer: 'Café', summary: '' },
+    { type: 'done', response: { id: 'confirmed', answer: 'Café roads' } },
+  ]
+  const wire = new TextEncoder().encode(frames.map(f => JSON.stringify(f) + '\n').join(''))
+  const streamed = bytes => new Response(new ReadableStream({
+    start(controller) {
+      for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+      controller.close()
+    },
+  }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+  await withFetch(() => streamed(wire), async () => {
+    const received = []
+    const result = await ask('County roads?', p => received.push(p.answer))
+    assert.deepEqual(received, ['', 'Café'])
+    assert.equal(result.id, 'confirmed')
+  })
+  await withFetch(() => streamed(wire.slice(0, -3)), async () => {
+    await assert.rejects(ask('County roads?', () => {}), /interrupted/)
+  })
+
   for (const call of [() => getDashboardOverview(), () => ask('How many crashes?')]) {
     await withFetch(() => { throw new TypeError('network down') }, async () => {
       const err = await call().then(() => null, (e) => e)

@@ -14,9 +14,12 @@ result seen in this run, so a hallucinated source can't reach the user
 (§27, §33.10).
 """
 import json
+import logging
+from time import perf_counter
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.json import parse_partial_json
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -26,12 +29,15 @@ from .schemas import AgentAnswer
 from .tools import ALL_TOOLS
 
 MAX_CYCLES = 3
+logger = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     cycle_count: int
     final: AgentAnswer | None
+    planner_ms: list[int]
+    finalizer_ms: int
 
 
 def _collect_seen_sources(messages: list[BaseMessage]) -> set[tuple[str | None, str | None]]:
@@ -71,7 +77,7 @@ def validate_citations(answer: AgentAnswer, messages: list[BaseMessage]) -> Agen
     return answer.model_copy(update={"citations": kept})
 
 
-def build_graph(llm=None):
+def build_graph(llm=None, emit=None):
     """Builds and compiles the graph. `llm` is injectable (any object with
     .bind_tools() and .with_structured_output(), matching LangChain's chat
     model interface) so tests can substitute a fake model instead of
@@ -82,14 +88,19 @@ def build_graph(llm=None):
         llm = get_llm()
 
     llm_with_tools = llm.bind_tools(ALL_TOOLS)
-    llm_structured = llm.with_structured_output(AgentAnswer)
+    if emit is None:
+        llm_structured = llm.with_structured_output(AgentAnswer)
+    else:
+        final_tool = llm.bind_tools([AgentAnswer], tool_choice="AgentAnswer", parallel_tool_calls=False)
 
     def agent_node(state: AgentState) -> dict:
         messages = state["messages"]
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
+        started = perf_counter()
         response = llm_with_tools.invoke(messages)
-        return {"messages": [response]}
+        elapsed = round((perf_counter() - started) * 1000)
+        return {"messages": [response], "planner_ms": [*state.get("planner_ms", []), elapsed]}
 
     def tools_node(state: AgentState) -> dict:
         result = ToolNode(ALL_TOOLS).invoke(state)
@@ -110,8 +121,30 @@ def build_graph(llm=None):
 
     def finalize_node(state: AgentState) -> dict:
         messages = list(state["messages"]) + [HumanMessage(content=FINALIZE_INSTRUCTIONS)]
-        answer = llm_structured.invoke(messages)
-        return {"final": answer}
+        started = perf_counter()
+        if emit is None:
+            answer = llm_structured.invoke(messages)
+        else:
+            # Preview only public narrative fields. Require complete, valid
+            # structured output before publishing citations or caching anything.
+            args = ""
+            previous = None
+            for chunk in final_tool.stream(messages):
+                for part in chunk.tool_call_chunks:
+                    args += part.get("args") or ""
+                if not args:
+                    continue
+                try:
+                    parsed = parse_partial_json(args)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and isinstance(parsed.get("answer"), str):
+                    preview = (parsed["answer"], parsed.get("summary") or "")
+                    if preview != previous:
+                        emit({"type": "text", "answer": preview[0], "summary": preview[1]})
+                        previous = preview
+            answer = AgentAnswer.model_validate_json(args)
+        return {"final": answer, "finalizer_ms": round((perf_counter() - started) * 1000)}
 
     def validate_citations_node(state: AgentState) -> dict:
         return {"final": validate_citations(state["final"], state["messages"])}
@@ -131,17 +164,28 @@ def build_graph(llm=None):
     return graph.compile()
 
 
-def run(question: str, llm=None) -> AgentState:
+def run(question: str, llm=None, emit=None) -> AgentState:
     """Runs the graph on one question, returns the full final state (messages
     included) - the API layer needs the message history too, to pull any
     build_visualization_spec results out alongside the answer itself.
     """
-    compiled = build_graph(llm)
-    return compiled.invoke({
+    compiled = build_graph(llm, emit)
+    result = compiled.invoke({
         "messages": [HumanMessage(content=question)],
         "cycle_count": 0,
         "final": None,
     })
+    from ..retrieval.sql_tool import request_id
+    logger.info("agent_trace %s", json.dumps({
+        "request_id": request_id.get(), **trace(result),
+        "planner_ms": result["planner_ms"], "finalizer_ms": result["finalizer_ms"],
+    }))
+    return result
+
+
+def trace(result: AgentState) -> dict:
+    planners = len(result["planner_ms"])
+    return {"plannerCalls": planners, "finalizerCalls": 1, "modelCalls": planners + 1}
 
 
 def ask(question: str, llm=None) -> AgentAnswer:

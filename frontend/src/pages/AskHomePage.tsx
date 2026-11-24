@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+import { warmAskBackend } from '@/services/queryService'
 import { useNavigate } from 'react-router-dom'
 import { Bike, ChevronDown, Landmark, MapPin, PersonStanding, Shield } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -11,6 +13,7 @@ const PROMPT_ICONS = [PersonStanding, MapPin, Landmark, Bike, Shield]
 
 export function AskHomePage() {
   const navigate = useNavigate()
+  useEffect(warmAskBackend, [])
 
   function handleAsk(question: string) {
     navigate(buildAskResultPath(question))

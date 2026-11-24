@@ -7,7 +7,7 @@ depend on real data files being present.
 import json
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from mocolens.agent import graph as graph_module
@@ -67,6 +67,25 @@ def _no_tool_call_message() -> AIMessage:
 
 
 BASE_ANSWER = AgentAnswer(answer="Yes.", summary="Crashes rose.", what_data_means="More crashes happened.")
+
+
+def test_finalizer_streams_public_text_in_one_call():
+    class StreamingLLM(FakeLLM):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def stream(self, messages):
+            for text in ['{"answer":"Ye', 's.","summary":"Crashes rose.",',
+                         '"what_data_means":"More crashes happened."}']:
+                yield AIMessageChunk(content="", tool_call_chunks=[{"name": None, "id": None,
+                                      "args": text, "index": 0}])
+
+    previews = []
+    result = graph_module.run("test", StreamingLLM([_no_tool_call_message()], BASE_ANSWER), previews.append)
+    assert result["final"] == BASE_ANSWER
+    assert previews[0] == {"type": "text", "answer": "Ye", "summary": ""}
+    assert previews[-1]["summary"] == BASE_ANSWER.summary
+    assert graph_module.trace(result) == {"modelCalls": 2, "plannerCalls": 1, "finalizerCalls": 1}
 
 
 @pytest.fixture(autouse=True)

@@ -6,7 +6,7 @@ import { TopModeToggle } from '@/components/layout/TopModeToggle'
 import { Card } from '@/components/common/Card'
 import { UserQuestion } from '@/components/chat/UserQuestion'
 import { AgentAnswer } from '@/components/chat/AgentAnswer'
-import { ask } from '@/services/queryService'
+import { ask, type AnswerPreview } from '@/services/queryService'
 import { BackendConfigurationError, BackendError } from '@/lib/backendFetch'
 import type { QueryResponse } from '@/types/query'
 import { buildAskResultPath } from '@/lib/askRoute'
@@ -24,37 +24,65 @@ function describeError(err: unknown): string {
   }
   // 400/422 carry the API's own wording, 0 is "unreachable", 504 is the
   // client-side timeout - all three already read as plain English.
-  if (err instanceof BackendError && [0, 400, 422, 504].includes(err.status)) return err.message
+  if (err instanceof BackendError && [0, 400, 422, 502, 504].includes(err.status)) return err.message
   return 'Something went wrong while answering that question. Please try again in a moment.'
 }
 
 export function AskResultPage() {
   const location = useLocation()
-  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const stateQuestion = (location.state as { question?: string } | null)?.question
   const question = searchParams.get('q')?.trim() || stateQuestion?.trim() || DEFAULT_QUESTION
+  return <AskResult key={question} question={question} />
+}
 
+function AskResult({ question }: { question: string }) {
+  const navigate = useNavigate()
+  const [preview, setPreview] = useState<AnswerPreview | null>(null)
   const [response, setResponse] = useState<QueryResponse | null>(null)
   const [error, setError] = useState<{ question: string; message: string } | null>(null)
   const [savedResponseId, setSavedResponseId] = useState<string | null>(null)
 
   useEffect(() => {
-    let isCurrent = true
-    ask(question).then(
+    const controller = new AbortController()
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    let target: AnswerPreview = { answer: '', summary: '' }
+    let visible = 0
+    let frame = 0
+    let completed: QueryResponse | undefined
+
+    function paint() {
+      frame = 0
+      const total = target.answer.length + target.summary.length
+      visible = reducedMotion || document.hidden ? total : Math.min(total, visible + Math.max(4, Math.ceil(total / 32)))
+      setPreview({
+        answer: target.answer.slice(0, visible),
+        summary: target.summary.slice(0, Math.max(visible - target.answer.length, 0)),
+      })
+      if (visible < total) frame = requestAnimationFrame(paint)
+      else if (completed) {
+        setResponse(completed)
+        setSavedResponseId(isInsightSaved(completed.id) ? completed.id : null)
+      }
+    }
+    function progress(next: AnswerPreview) {
+      if (controller.signal.aborted) return
+      target = next
+      if (!frame) paint()
+    }
+    ask(question, progress, controller.signal).then(
       (result) => {
-        if (isCurrent) {
-          setError(null)
-          setResponse(result)
-          setSavedResponseId(isInsightSaved(result.id) ? result.id : null)
-        }
+        completed = result
+        progress(result)
       },
       (err) => {
-        if (isCurrent) setError({ question, message: describeError(err) })
+        cancelAnimationFrame(frame)
+        if (!controller.signal.aborted) setError({ question, message: describeError(err) })
       },
     )
     return () => {
-      isCurrent = false
+      controller.abort()
+      cancelAnimationFrame(frame)
     }
   }, [question])
 
@@ -90,8 +118,15 @@ export function AskResultPage() {
             onSave={handleSave}
             isSaved={savedResponseId === response.id}
           />
+        ) : preview?.answer ? (
+          <Card>
+            <h2 aria-busy="true" className="text-xl font-bold leading-snug md:text-2xl">{preview.answer}</h2>
+            <p className="mt-1 text-sm text-text-muted md:text-base">{preview.summary}</p>
+          </Card>
         ) : (
-          <p className="text-sm text-text-muted">Thinking...</p>
+          <p role="status" className="text-sm text-text-muted">
+            {preview ? 'Checking county data and reports…' : 'Connecting to MoCoLens… The first visit may take a moment.'}
+          </p>
         )}
       </div>
     </div>

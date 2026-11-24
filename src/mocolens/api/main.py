@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -303,11 +303,17 @@ def sources(request: Request) -> SourcesResponse:
 @limiter.limit(f"{DAILY_QUERY_BUDGET}/day", key_func=lambda request: "everyone")
 @limiter.limit("40/hour")
 @limiter.limit("10/minute")
-def query(request: Request, body: QueryRequest) -> QueryResponse:
+def query(request: Request, body: QueryRequest, response: Response) -> QueryResponse:
     question = body.question.strip()
     invalid_reason = _invalid_question_reason(question)
     if invalid_reason:
         raise HTTPException(status_code=400, detail=invalid_reason)
+
+    cached = query_service.cached_answer(question)
+    if cached is not None:
+        response.headers["X-Answer-Cache"] = "hit"
+        return cached
+    response.headers["X-Answer-Cache"] = "miss"
 
     # Refuse rather than queue: a queued question would sit on "Thinking..."
     # behind others for minutes, and the client gives up at 120s anyway.

@@ -3,6 +3,7 @@ name = "mocolens"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "cachetools>=5",
     "pyyaml>=6.0",
     # The report index is a flat numpy array searched by dot product, and
     # the query encoder runs on onnxruntime rather than torch - see

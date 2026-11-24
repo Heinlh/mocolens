@@ -21,11 +21,15 @@ Embeddings are computed explicitly rather than by an embedding function the
 store owns, so the model choice stays ours.
 """
 import json
+from copy import deepcopy
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from .revision import file_revision
 
 # Defined here, not in processing/chunker.py: this module is needed at API
 # serve time (search_reports embeds the query with the same model), and
@@ -46,7 +50,7 @@ _BATCH = 32
 
 _session: Any | None = None
 _tokenizer: Any | None = None
-_index_cache: dict[Path, tuple[np.ndarray, list[dict]]] = {}
+_index_cache: dict[Path, tuple[tuple, tuple[np.ndarray, list[dict]]]] = {}
 
 
 def _get_encoder():
@@ -107,12 +111,13 @@ def load_index(domain: str, persist_dir: Path | None = None) -> tuple[np.ndarray
     Records carry the chunk text and every metadata field a citation needs,
     in the same row order as the embedding matrix.
     """
-    path = index_path(domain, persist_dir)
+    path = index_path(domain, persist_dir).resolve()
+    revision = file_revision(path)
     cached = _index_cache.get(path)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == revision:
+        return cached[1]
 
-    if not path.exists():
+    if revision is None:
         raise FileNotFoundError(
             f"{path} missing - run scripts/rebuild_vector_index.py --domain {domain} first."
         )
@@ -120,7 +125,7 @@ def load_index(domain: str, persist_dir: Path | None = None) -> tuple[np.ndarray
     # or swapped index file can never execute anything on load.
     with np.load(path, allow_pickle=False) as data:
         index = (data["embeddings"].astype(np.float32), json.loads(str(data["records"])))
-    _index_cache[path] = index
+    _index_cache[path] = (revision, index)
     return index
 
 
@@ -142,7 +147,7 @@ def save_index(
         records=np.array(json.dumps(records)),
         built_at=np.array(datetime.now(timezone.utc).isoformat()),
     )
-    _index_cache.pop(path, None)
+    _index_cache.pop(path.resolve(), None)
     return path
 
 
@@ -239,7 +244,23 @@ def search(
     `similarity` is cosine similarity, which for these unit-length vectors
     is just the dot product.
     """
-    embeddings, records = load_index(domain, persist_dir)
+    directory = (persist_dir or PERSIST_DIR).resolve()
+    revision = file_revision(index_path(domain, directory))
+    return deepcopy(_search(domain, directory, revision, query, top_k, year_at_least))
+
+
+@lru_cache(maxsize=256)
+def _query_vector(query: str) -> np.ndarray:
+    return encode([query])[0]
+
+
+@lru_cache(maxsize=64)
+def _search(
+    domain: str, directory: Path, revision: tuple | None,
+    query: str, top_k: int, year_at_least: int | None,
+) -> list[dict]:
+    """The revision in the key expires rankings when a new index is published."""
+    embeddings, records = load_index(domain, directory)
     rows = np.arange(len(records))
     if year_at_least is not None:
         rows = rows[[
@@ -249,6 +270,6 @@ def search(
     if rows.size == 0:
         return []
 
-    scores = embeddings[rows] @ encode([query])[0]
+    scores = embeddings[rows] @ _query_vector(query)
     order = np.argsort(-scores)[:top_k]
     return [{**records[rows[i]], "similarity": float(scores[i])} for i in order]

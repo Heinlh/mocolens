@@ -3,11 +3,15 @@ AgentAnswer into QueryResponse (frontend/src/types/query.ts).
 """
 import json
 import uuid
+from threading import Lock
 
+from cachetools import TTLCache
 from langchain_core.messages import ToolMessage
 
 from ..agent.schemas import AgentAnswer
-from ..processing.curate import data_as_of
+from ..processing.curate import build_info_path, data_as_of
+from ..retrieval import metadata_tool
+from ..storage.revision import file_revision
 from ..retrieval.visualization_tool import build_visualization_spec
 from . import schemas
 
@@ -34,6 +38,33 @@ class _LazyAgentGraph:
 
 
 agent_graph = _LazyAgentGraph()
+
+# Cache serialized responses so callers can freely mutate their own copy.
+# Keep the payload budget small on the 512 MiB serving instance.
+_answers = TTLCache(maxsize=2 * 1024 * 1024, ttl=3600, getsizeof=len)
+_answers_lock = Lock()
+
+
+def _answer_key(question: str) -> tuple:
+    build = build_info_path(DOMAIN)
+    raw = metadata_tool.DATA_DIR / "raw"
+    inputs = (
+        build, build.with_name("analytics.duckdb"), build.with_name("reports_index.npz"),
+        metadata_tool.CONFIG_PATH, raw / "documents" / DOMAIN / "manifest.jsonl",
+        raw / "api" / DOMAIN,
+    )
+    return question, tuple(file_revision(path) for path in inputs)
+
+
+def cached_answer(question: str) -> schemas.QueryResponse | None:
+    key = _answer_key(question)
+    with _answers_lock:
+        payload = _answers.get(key)
+    if payload is None:
+        return None
+    response = schemas.QueryResponse.model_validate_json(payload)
+    response.id = str(uuid.uuid4())
+    return response
 
 
 def _tool_payloads(messages: list) -> list[dict]:
@@ -172,5 +203,18 @@ def _to_response(question: str, answer: AgentAnswer, messages: list) -> schemas.
 
 
 def ask(question: str) -> schemas.QueryResponse:
+    key = _answer_key(question)
     result = agent_graph.run(question)
-    return _to_response(question, result["final"], result["messages"])
+    messages = result["messages"]
+    response = _to_response(question, result["final"], messages)
+    # Tool failures can reach finalization as ordinary messages. Let the
+    # next request retry even if the agent managed to write a partial answer.
+    if any(isinstance(m, ToolMessage) and m.status == "error" for m in messages):
+        return response
+    if any(p.get("error") for p in _tool_payloads(messages)):
+        return response
+    payload = response.model_dump_json().encode()
+    if len(payload) <= _answers.maxsize and _answer_key(question) == key:
+        with _answers_lock:
+            _answers[key] = payload
+    return response

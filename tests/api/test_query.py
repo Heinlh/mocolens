@@ -32,6 +32,7 @@ def _isolate_rate_limiter():
     """
     limiter.enabled = False
     limiter.reset()
+    query_service._answers.clear()
     yield
     limiter.enabled = False
     limiter.reset()
@@ -57,6 +58,35 @@ BASE_ANSWER = AgentAnswer(
     citations=[Citation(title="FY25 Report", source_type="report", url="https://x.gov/r.pdf", page="3")],
     follow_up_prompts=["What about cyclists?"],
 )
+
+
+@patch("mocolens.api.query_service.agent_graph.run")
+def test_repeat_serves_same_evidence_with_new_id_and_refresh_invalidates(mock_run, tmp_path, monkeypatch):
+    build = tmp_path / "build_info.json"
+    monkeypatch.setattr(query_service, "build_info_path", lambda domain: build)
+    mock_run.return_value = {"final": BASE_ANSWER, "messages": [_viz_tool_message()]}
+    question = {"question": "How have pedestrian crashes changed?"}
+    first = client.post("/api/query", json=question)
+    repeat = client.post("/api/query", json=question)
+    assert first.headers["X-Answer-Cache"] == "miss"
+    assert repeat.headers["X-Answer-Cache"] == "hit"
+    old, new = first.json(), repeat.json()
+    assert old.pop("id") != new.pop("id")
+    assert old == new
+    assert mock_run.call_count == 1
+    build.write_text("{}")
+    assert client.post("/api/query", json=question).headers["X-Answer-Cache"] == "miss"
+    assert mock_run.call_count == 2
+
+
+@patch("mocolens.api.query_service.agent_graph.run")
+def test_partial_answer_after_tool_failure_is_retried(mock_run):
+    mock_run.return_value = {"final": BASE_ANSWER, "messages": [_viz_tool_message(error="failed")]}
+    for _ in range(2):
+        response = client.post("/api/query", json={"question": "How many crashes happened?"})
+        assert response.status_code == 200
+        assert response.headers["X-Answer-Cache"] == "miss"
+    assert mock_run.call_count == 2
 
 
 # --- query_service internals ---

@@ -124,6 +124,32 @@ def test_search_on_a_missing_index_names_the_script_that_builds_it(tmp_path):
         vector_store.search("nope", "anything", persist_dir=tmp_path)
 
 
+def test_rankings_and_vectors_reused_until_index_changes(tmp_path, monkeypatch):
+    chunks = [_chunk("a", "first", year=2025), _chunk("b", "second", year=2024)]
+    matrix = np.eye(2, dtype=np.float32)
+    vector_store.save_index("d", matrix, chunks, tmp_path)
+    calls = []
+
+    def encode(texts):
+        calls.extend(texts)
+        return matrix[:1]
+
+    monkeypatch.setattr(vector_store, "encode", encode)
+    query = "cached vector test"
+
+    def search(k, year=None):
+        return vector_store.search("d", query, k, year, tmp_path)
+
+    search(2)[0]["text"] = "modified by caller"
+    hits = vector_store._search.cache_info().hits
+    assert search(2)[0]["text"] == "first"
+    assert vector_store._search.cache_info().hits == hits + 1
+    assert len(search(1)) == len(search(2, 2025)) == 1
+    vector_store.save_index("d", matrix[:1], [chunks[1]], tmp_path)
+    assert [r["chunk_id"] for r in search(2)] == ["b"]
+    assert calls == [query]
+
+
 def test_index_round_trips_without_pickle(tmp_path):
     # allow_pickle=False on load, so records must survive as plain JSON.
     vector_store.replace_document("d", "doc", [_chunk("a", "text", year=2025, page_start=3)],

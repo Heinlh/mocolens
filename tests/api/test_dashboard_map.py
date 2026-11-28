@@ -33,6 +33,9 @@ client = TestClient(app)
     # Route designators must not be title-cased into "Md 97".
     ("MD 97 NB RAMP", "MD 97 NB Ramp"),
     ("US 29", "US 29"),
+    # Ordinals stay lowercase: "16th", not "16Th".
+    ("16TH ST", "16th St"),
+    ("E 3RD AVE", "E 3rd Ave"),
     ("", None),
     (None, None),
 ])

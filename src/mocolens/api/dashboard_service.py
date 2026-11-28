@@ -449,6 +449,8 @@ _DIRECTION_SUFFIX_RE = re.compile(r"\s*\((?:[NSEW]B|[NSEW]B/[A-Z]|[A-Z]{1,3})\)\
 # Route and compass tokens that str.title() would otherwise write as "Md 97"
 # or "Nb". Anything not listed keeps its title case.
 _UPPERCASE_ROAD_TOKENS = frozenset({"md", "us", "i", "sr", "nb", "sb", "eb", "wb", "sw", "se", "ne", "nw"})
+# str.title() capitalizes after a digit: "16TH" -> "16Th".
+_ORDINAL_RE = re.compile(r"(?<=\d)(St|Nd|Rd|Th)\b")
 
 
 def _clean_road_label(name: str | None) -> str | None:
@@ -467,7 +469,8 @@ def _clean_road_label(name: str | None) -> str | None:
     if half and words[:half] == words[half:]:
         words = words[:half]
     titled = [
-        word.upper() if word.lower() in _UPPERCASE_ROAD_TOKENS else word.title()
+        word.upper() if word.lower() in _UPPERCASE_ROAD_TOKENS
+        else _ORDINAL_RE.sub(lambda m: m.group(1).lower(), word.title())
         for word in words
     ]
     return " ".join(titled) or None

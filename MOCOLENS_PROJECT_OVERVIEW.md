@@ -74,7 +74,7 @@ At query time, the API validates the user's input and starts a new agent run. Th
 | Pydantic | Structured output contracts between the model, API, and frontend |
 | LangGraph | Explicit state machine for planning, tool execution, finalization, and validation |
 | LangChain | Typed tool wrappers and Azure OpenAI integration |
-| Azure OpenAI `gpt-4.1-mini` | Runtime reasoning, tool selection, and evidence synthesis |
+| Azure OpenAI `gpt-5.4-mini` | Runtime reasoning, tool selection, and evidence synthesis |
 | SlowAPI | Per-client query and dashboard rate limiting |
 | Docker and Render | Reproducible backend deployment |
 

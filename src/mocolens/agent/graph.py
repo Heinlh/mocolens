@@ -120,7 +120,14 @@ def build_graph(llm=None, emit=None):
         return "finalize" if state["cycle_count"] >= MAX_CYCLES else "agent"
 
     def finalize_node(state: AgentState) -> dict:
-        messages = list(state["messages"]) + [HumanMessage(content=FINALIZE_INSTRUCTIONS)]
+        # The system prompt is not stored in state (agent_node adds it per
+        # call), so it is added here too: its scope, privacy and integrity
+        # rules have to bind the call that writes the user-facing answer.
+        messages = (
+            [SystemMessage(content=SYSTEM_PROMPT)]
+            + [m for m in state["messages"] if not isinstance(m, SystemMessage)]
+            + [HumanMessage(content=FINALIZE_INSTRUCTIONS)]
+        )
         started = perf_counter()
         if emit is None:
             answer = llm_structured.invoke(messages)

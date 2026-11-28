@@ -437,7 +437,7 @@ Silver-Spring-specific crash data (only county-wide agency_name exists -
 the same known limitation from section 5) rather than fabricating a
 number - grounding worked exactly as designed, live, unprompted.
 
-LLM: Azure OpenAI, gpt-4.1-mini, via langchain-openai's AzureChatOpenAI.
+LLM: Azure OpenAI, gpt-5.4-mini (reasoning_effort=low; was gpt-4.1-mini until 2026-11), via langchain-openai's AzureChatOpenAI.
 Went through two provider changes to get here, each for a real reason,
 not indecision:
   1. IBM watsonx.ai (ibm/granite-4-h-small) - the user's original choice,
@@ -939,7 +939,7 @@ src/mocolens/storage/         vector_store (ONNX + .npz) + duckdb_store (done)
 src/mocolens/retrieval/       5 agent tools (done) - now called by the agent
 src/mocolens/api/             FastAPI app - 3 of ~6 planned endpoints (done):
                                /api/health, /api/dashboard/summary, /api/query
-src/mocolens/agent/           LangGraph agent + Azure OpenAI gpt-4.1-mini
+src/mocolens/agent/           LangGraph agent + Azure OpenAI gpt-5.4-mini
                                (done, live-verified with real questions)
 frontend/                     6-screen React app (done) - Dashboard Overview
                                AND the Ask flow backed by real data, the

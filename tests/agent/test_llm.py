@@ -77,3 +77,13 @@ def test_deployment_and_api_version_can_be_overridden_for_a_rollback(monkeypatch
     assert captured["api_version"] == "2025-01-01-preview"
     assert captured["temperature"] == 0.1
     assert "reasoning_effort" not in captured
+
+
+def test_foundry_project_endpoint_is_rejected_with_a_clear_message(monkeypatch):
+    """The project endpoint cannot serve Chat Completions; fail early and say why."""
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "fake-key")
+    monkeypatch.setenv(
+        "AZURE_OPENAI_ENDPOINT", "https://mocolens.services.ai.azure.com/api/projects/mocolens",
+    )
+    with pytest.raises(RuntimeError, match="openai.azure.com"):
+        llm_module.get_llm()

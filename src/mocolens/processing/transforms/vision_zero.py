@@ -211,7 +211,7 @@ def _build_fact_crashes(con: duckdb.DuckDBPyConnection, report: QualityReport) -
 
     # Materialized as a real table, not a CTE scoped to one statement - the
     # quality checks below need to query it after fact_crashes is built.
-    con.execute("""
+    con.execute(r"""
         CREATE OR REPLACE TABLE _stg_crashes_base AS
         WITH deduped AS (
             SELECT *, ROW_NUMBER() OVER (
@@ -224,7 +224,12 @@ def _build_fact_crashes(con: duckdb.DuckDBPyConnection, report: QualityReport) -
             TRY_CAST(crash_date_time AS TIMESTAMP) AS crash_datetime,
             TRY_CAST(latitude AS DOUBLE) AS raw_latitude,
             TRY_CAST(longitude AS DOUBLE) AS raw_longitude,
-            cross_street_name AS road_name,
+            -- The road the crash happened on. Not cross_street_name: that is
+            -- the intersecting street, and from 2024 the feed fills it on only
+            -- about a third of crashes. Directional suffixes ("GEORGIA AVE
+            -- (SB/L)") are stripped so one road groups as one name.
+            NULLIF(trim(regexp_replace(regexp_replace(road_name, '\s*\([^)]*\)', '', 'g'), '\.$', '')), '')
+                AS road_name,
             normalize_agency(agency_name) AS agency_name,
             route_type,
             clean_upper(hit_run) = 'YES' AS hit_run,

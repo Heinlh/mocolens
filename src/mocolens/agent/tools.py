@@ -63,18 +63,20 @@ def query_analytics(question: str, sql: str, reason: str) -> dict:
         table carry only one or two recorded crashes because they are short
         or lightly travelled, not because they are safe - never read a low
         count as low risk.
-      - road_name is NULL on roughly a quarter of rows. Any ranking of
-        roads must exclude it (WHERE road_name IS NOT NULL), or the null
-        group outranks every real road by an order of magnitude.
-      - road_name holds the raw police-feed string: UPPERCASE and
-        abbreviated ("GEORGIA AVE", never "Georgia Avenue"), with RD, DR,
-        AVE, ST, LA, BLVD, PKWY and HWY as the common endings, and many
-        rows carrying a direction, ramp, or second street on the end
-        ("GEORGIA AVE (SB/L)", "CONNECTICUT AVE GEORGIA AVE"). So never
-        match a road with = or a spelled-out name - that silently returns
-        zero rows and looks like "no crashes here". Match the distinctive
-        word only, with ILIKE '%GEORGIA%', which also gathers the ramp and
-        intersection variants of the same road.
+      - road_name is the road the crash happened on. It is NULL on about
+        one row in six (parking lots, driveways, and reports with no road),
+        so any ranking of roads must exclude it (WHERE road_name IS NOT
+        NULL), or the null group outranks every real road.
+      - road_name is the police feed's spelling: UPPERCASE and abbreviated
+        ("GEORGIA AVE", never "Georgia Avenue"), with RD, DR, AVE, ST, LA,
+        BLVD, PKWY and HWY as the common endings. Direction suffixes are
+        already removed, so GROUP BY road_name ranks whole roads. A few
+        roads keep a side letter ("UNIVERSITY BLVD E" / "UNIVERSITY BLVD
+        W") and highway ramps read "RAMP 5 FR IS 270 SB TO ...". To count
+        one road, never match with = or a spelled-out name - that silently
+        returns zero rows and looks like "no crashes here". Match the name
+        and its ending, with ILIKE '%GEORGIA AVE%' - the bare word also
+        matches GEORGIAN WAY and GEORGIAN WOODS PL.
       - Coverage starts in 2015 and the most recent year is partial, so a
         year-over-year comparison that includes it will understate it.
       - The police feed switched code lists on 2024-01-01 for weather,

@@ -1,11 +1,11 @@
 {
   "domain": "vision_zero",
-  "built_at": "2026-11-23T19:01:27.664889+00:00",
-  "snapshot_date": "2026-11-23",
+  "built_at": "2026-11-28T07:24:09.935424+00:00",
+  "snapshot_date": "2026-11-28",
   "row_counts": {
-    "fact_participants": 231788,
-    "fact_crashes": 127326
+    "fact_participants": 232236,
+    "fact_crashes": 127566
   },
   "coverage_start": "2015-01-01",
-  "coverage_end": "2026-11-17"
+  "coverage_end": "2026-11-24"
 }

@@ -18,7 +18,7 @@ INCIDENTS = [
         "latitude": "39.05", "longitude": "-77.10",
         "acrs_report_type": "Injury Crash", "collision_type": "Angle",
         "weather": "Clear", "light": "Daylight", "surface_condition": "Dry",
-        "hit_run": "No", "cross_street_name": "MAIN ST",
+        "hit_run": "No", "road_name": "GEORGIA AVE (SB/L)", "cross_street_name": "MAIN ST",
         "agency_name": "ROCKVILLE", "route_type": "County Route",
     },
     {
@@ -27,7 +27,7 @@ INCIDENTS = [
         "latitude": "39.05", "longitude": "-77.10",
         "acrs_report_type": "Injury Crash", "collision_type": "Angle",
         "weather": "Clear", "light": "Daylight", "surface_condition": "Dry",
-        "hit_run": "No", "cross_street_name": "MAIN ST",
+        "hit_run": "No", "road_name": "GEORGIA AVE (SB/L)", "cross_street_name": "MAIN ST",
         "agency_name": "ROCKVILLE", "route_type": "County Route",
     },
     {
@@ -36,7 +36,7 @@ INCIDENTS = [
         "latitude": "90.0", "longitude": "-77.10",
         "acrs_report_type": "fatal crash", "collision_type": "Head On",
         "weather": "Rain", "light": "Dark - Lighted", "surface_condition": "Wet",
-        "hit_run": "Yes", "cross_street_name": "OAK AVE",
+        "hit_run": "Yes", "road_name": "OAK AVE", "cross_street_name": "ELM ST",
         "agency_name": "MONTGOMERY", "route_type": "Maryland (State)",
     },
     {
@@ -45,7 +45,7 @@ INCIDENTS = [
         "latitude": "39.10", "longitude": "-77.20",
         "acrs_report_type": "PROPERTY DAMAGE CRASH", "collision_type": None,
         "weather": None, "light": None, "surface_condition": None,
-        "hit_run": "No", "cross_street_name": None,
+        "hit_run": "No", "road_name": None, "cross_street_name": "BIRCH LA",
         "agency_name": "GAITHERSBURG", "route_type": None,
     },
     {
@@ -56,7 +56,7 @@ INCIDENTS = [
         "latitude": "39.02", "longitude": "-77.05",
         "acrs_report_type": "Fatal Crash", "collision_type": "Rear End",
         "weather": "Clear", "light": "Daylight", "surface_condition": "Dry",
-        "hit_run": "No", "cross_street_name": "ELM ST",
+        "hit_run": "No", "road_name": "ELM ST", "cross_street_name": None,
         "agency_name": "Rockville Police Departme", "route_type": "County Route",
     },
     {
@@ -66,7 +66,7 @@ INCIDENTS = [
         "latitude": "39.00", "longitude": "-77.00",
         "acrs_report_type": "Unknown Type", "collision_type": "Angle",
         "weather": "Clear", "light": "Daylight", "surface_condition": "Dry",
-        "hit_run": "No", "cross_street_name": "PINE ST",
+        "hit_run": "No", "road_name": "PINE ST.", "cross_street_name": "PINE ST",
         "agency_name": "Some New PD", "route_type": "County Route",
     },
 ]
@@ -168,6 +168,14 @@ def test_null_optional_fields_pass_through(built):
     assert c3["collision_type"] is None
     assert c3["road_name"] is None
     assert c3["weather"] is None
+
+
+def test_road_name_is_the_crash_road_not_the_cross_street(built):
+    con, _ = built
+    assert _row(con, "C1")["road_name"] == "GEORGIA AVE"  # "(SB/L)" stripped, cross street ignored
+    assert _row(con, "C2")["road_name"] == "OAK AVE"
+    assert _row(con, "C3")["road_name"] is None  # no road, even though a cross street exists
+    assert _row(con, "C5")["road_name"] == "PINE ST"  # trailing period stripped
 
 
 def test_out_of_bounds_coordinates_nulled_but_row_kept(built):

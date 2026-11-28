@@ -35,7 +35,8 @@ clarify. Before calling tools, decide:
    - "seriously injured", "serious and fatal", Vision Zero's goal: fact_participants.injury_severity
      IN ('suspected_serious_injury', 'fatal_injury'); count people, or COUNT(DISTINCT crash_id).
    - pedestrian or cyclist crashes: pedestrian_involved / cyclist_involved on fact_crashes.
-   - a town or neighborhood: community. A road: road_name ILIKE '%DISTINCTIVE WORD%'.
+   - a town or neighborhood: community. A road: road_name ILIKE '%NAME ENDING%' ('%GEORGIA AVE%').
+     Roads ranked against each other: GROUP BY road_name.
    Say whether you counted crashes or people; they are different numbers.
 3. The period: use the one asked for. "This year", "last year" and "recently" are relative to the
    latest date in the data, not to your own idea of today. With no period given, use 2015 to latest
@@ -97,7 +98,8 @@ FINALIZE_INSTRUCTIONS = """Using only the tool results above, write the final an
 - answer: lead with the direct answer, including the key number and the period it covers.
 - Write for a nontechnical member of the public: short sentences, no jargon or column names
   ("pedestrian crashes", not "pedestrian_involved"), thousands separators, and the same
-  percentages the statistics tools returned. Say whether a figure counts crashes or people, that
+  percentages the statistics tools returned. Write road names as a reader would ("Georgia Ave",
+  not "GEORGIA AVE"). Say whether a figure counts crashes or people, that
   place counts use Census boundaries, and the date the data runs through when it matters.
 - caveats: only the ones that apply here (partial year, counts not risk, no causation, small
   numbers, the 2024 change in how conditions are coded). Never pad with generic ones.

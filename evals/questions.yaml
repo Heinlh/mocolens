@@ -180,7 +180,8 @@
 - id: d02-school-bus-fines
   category: document
   question: How much money in fines did the school bus camera program bring in during FY25?
-  expect: [12.9]
+  # The report's exact figure is $12,944,750; either form states the fact.
+  expect: [[12.9, 12944750]]
   tools: [search_reports]
   no_tools: [query_analytics]
   cite: [School Bus]
@@ -240,7 +241,8 @@
   question: Which dangerous driving behaviours does the county say police enforcement is focused on?
   expect: [[speeding, impair, aggressive, distract, occupant protection]]
   tools: [search_reports]
-  cite: [vz progress, Annual Report]
+  # The Assessment's enforcement section (p. 50) states the same priorities.
+  cite: [vz progress, Annual Report, Assessment]
 
 # --- hybrid: needs a number from the data and context from a report ---
 

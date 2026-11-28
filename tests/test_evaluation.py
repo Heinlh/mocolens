@@ -26,6 +26,8 @@ from mocolens.evaluation import Outcome, contains, score
     ("Most crashes were on GEORGIA AVE.", "Georgia", True),
     ("Rear-end collisions are the most common.", ["rear end", "rear-end"], True),
     ("Sideswipes are the most common.", ["rear end", "rear-end"], False),
+    # A typographic apostrophe says the same thing as a plain one.
+    ("I can’t forecast 2027.", "can't", True),
 ])
 def test_contains_matches_facts_the_way_a_reader_would(text, expected, found):
     assert contains(text, expected) is found

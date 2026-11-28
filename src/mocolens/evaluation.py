@@ -110,7 +110,8 @@ def contains(text: str, expected) -> bool:
     if isinstance(expected, (int, float)):
         tolerance = 0 if float(expected).is_integer() else 0.51
         return any(abs(number - expected) <= tolerance for number in numbers_in(text))
-    return str(expected).lower() in text.lower()
+    # Models write typographic apostrophes ("can’t"); the phrases use plain ones.
+    return str(expected).lower() in text.lower().replace("’", "'")
 
 
 def reference_values(sql: str, domain: str = DOMAIN) -> list:

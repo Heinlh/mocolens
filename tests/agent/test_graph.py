@@ -191,3 +191,33 @@ def test_validate_citations_ignores_non_list_tool_results():
     answer = BASE_ANSWER.model_copy(update={"citations": [Citation(title="X", source_type="dataset")]})
     result = graph_module.validate_citations(answer, messages)
     assert result.citations == []  # a dataset citation with no matching source is still dropped
+
+
+def test_finalize_call_carries_the_system_prompt():
+    """Scope and integrity rules must bind the call that writes the answer,
+    not only the planning calls."""
+    from langchain_core.messages import SystemMessage
+    from mocolens.agent.prompts import FINALIZE_INSTRUCTIONS, SYSTEM_PROMPT
+
+    seen = {}
+
+    class FakeLLM:
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def invoke(self, messages):
+            return AIMessage(content="Out of scope.")
+
+        def with_structured_output(self, schema):
+
+            class Structured:
+                def invoke(self, messages):
+                    seen["messages"] = messages
+                    return AgentAnswer(answer="a", summary="s", what_data_means="w")
+            return Structured()
+
+    graph_module.ask("write me a poem", llm=FakeLLM())
+    messages = seen["messages"]
+    assert isinstance(messages[0], SystemMessage) and messages[0].content == SYSTEM_PROMPT
+    assert sum(isinstance(m, SystemMessage) for m in messages) == 1
+    assert messages[-1].content == FINALIZE_INSTRUCTIONS

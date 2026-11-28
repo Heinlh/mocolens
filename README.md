@@ -13,7 +13,7 @@ report PDFs into a raw data lake, parses/chunks/embeds the PDFs (Docling +
 IBM Granite embeddings) into a flat vector index, normalizes the crash
 data into curated DuckDB tables, exposes 5 deterministic tools (SQL,
 semantic search, source metadata, statistics, chart specs) to a LangGraph
-agent running on Azure OpenAI (`gpt-4.1-mini`), and serves a FastAPI app -
+agent running on Azure OpenAI (`gpt-5.4-mini`), and serves a FastAPI app -
 `/api/health`, `/api/dashboard/summary`, `/api/dashboard/trends`,
 `/api/dashboard/map`, `/api/sources`, and `/api/query` (the agent) - with
 automated backend coverage for the API and agent behavior. A weekly GitHub

@@ -51,8 +51,17 @@ def get_llm(reasoning_effort: str = "low", max_tokens: int = 4000) -> AzureChatO
     if missing:
         raise RuntimeError(
             f"Missing Azure OpenAI credentials: {', '.join(missing)}. "
-            f"Copy .env.example to .env and fill them in from your Azure OpenAI "
-            f"resource's 'Keys and Endpoint' page."
+            f"Copy .env.example to .env and fill them in from your Foundry project's "
+            f"Overview page (or an Azure OpenAI resource's 'Keys and Endpoint' page)."
+        )
+    if "/api/projects/" in endpoint:
+        # The Foundry *project* endpoint serves the Foundry SDK and the
+        # Responses API, not the Chat Completions API this client calls - every
+        # request would fail with a 404 that never mentions the endpoint.
+        raise RuntimeError(
+            "AZURE_OPENAI_ENDPOINT is a Foundry project endpoint (.../api/projects/...). "
+            "Use the project's Azure OpenAI endpoint instead, "
+            "https://<resource-name>.openai.azure.com/, from the same Overview page."
         )
 
     deployment = _env("AZURE_OPENAI_DEPLOYMENT") or DEPLOYMENT

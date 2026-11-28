@@ -437,7 +437,7 @@ Silver-Spring-specific crash data (only county-wide agency_name exists -
 the same known limitation from section 5) rather than fabricating a
 number - grounding worked exactly as designed, live, unprompted.
 
-LLM: Azure OpenAI, gpt-5.4-mini (reasoning_effort=low; was gpt-4.1-mini until 2026-11), via langchain-openai's AzureChatOpenAI.
+LLM: Azure OpenAI, gpt-5.4-mini (reasoning_effort=low; was gpt-4.1-mini until 2026-11), via langchain-openai's ChatOpenAI against Azure's OpenAI v1 API (<resource>.openai.azure.com/openai/v1/, no api-version).
 Went through two provider changes to get here, each for a real reason,
 not indecision:
   1. IBM watsonx.ai (ibm/granite-4-h-small) - the user's original choice,
@@ -501,7 +501,7 @@ Files:
                                     10 tool schemas actually generate valid
                                     LLM function-calling JSON, not just that
                                     they import.
-  src/mocolens/agent/llm.py      - AzureChatOpenAI factory; raises a clear
+  src/mocolens/agent/llm.py      - chat model factory (Azure OpenAI v1 API); raises a clear
                                     RuntimeError naming exactly which env
                                     var(s) are missing, not a generic failure
   src/mocolens/agent/prompts.py  - system prompt (grounding rules, no

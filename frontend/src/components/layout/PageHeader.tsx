@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { HelpCircle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 interface PageHeaderProps {
   title?: string
@@ -21,13 +22,14 @@ export function PageHeader({ title, subtitle, actions, centerSlot, leadingSlot }
         <div className="min-w-0 flex-1">{leadingSlot}</div>
         <div className="flex flex-1 justify-center">{centerSlot}</div>
         <div className="flex flex-1 items-center justify-end gap-3">
-          <button
-            type="button"
+          <Link
+            to="/about"
             aria-label="Help"
+            title="About MoCoLens"
             className="rounded-full p-2 text-text-muted transition-colors hover:bg-surface-elevated hover:text-text"
           >
             <HelpCircle className="h-5 w-5" aria-hidden="true" />
-          </button>
+          </Link>
           <span
             aria-hidden="true"
             className="flex h-8 w-8 items-center justify-center rounded-full bg-danger text-xs font-semibold text-white"

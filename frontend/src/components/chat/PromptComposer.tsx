@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
-import { ArrowUp, Mic, Paperclip, SlidersHorizontal } from 'lucide-react'
+import { ArrowUp } from 'lucide-react'
 
 interface PromptComposerProps {
   placeholder?: string
@@ -45,20 +45,9 @@ export function PromptComposer({ placeholder = 'Ask a question...', onSubmit }: 
         rows={2}
         className="w-full resize-none bg-transparent px-2 py-1 text-base text-text placeholder:text-text-muted focus:outline-none"
       />
-      <div className="mt-2 flex items-center justify-between px-1">
-        <div className="flex items-center gap-1 text-text-muted">
-          <button type="button" aria-label="Attach a file" className="rounded-lg p-2 transition-colors hover:bg-surface-elevated-2 hover:text-text">
-            <Paperclip className="h-4 w-4" aria-hidden="true" />
-          </button>
-          <button type="button" aria-label="Filters" className="rounded-lg p-2 transition-colors hover:bg-surface-elevated-2 hover:text-text">
-            <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
+      <div className="mt-2 flex items-center justify-end px-1">
         <div className="flex items-center gap-1">
           <span className="mr-1 text-xs text-text-muted" aria-live="polite">{value.length}/{maxLength}</span>
-          <button type="button" aria-label="Voice input" className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface-elevated-2 hover:text-text">
-            <Mic className="h-4 w-4" aria-hidden="true" />
-          </button>
           <button
             type="submit"
             aria-label="Submit question"

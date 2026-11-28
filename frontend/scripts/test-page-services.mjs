@@ -145,7 +145,11 @@ try {
     assert.equal(result.id, 'confirmed')
   })
   await withFetch(() => streamed(wire.slice(0, -3)), async () => {
-    await assert.rejects(ask('County roads?', () => {}), /interrupted/)
+    await assert.rejects(ask('Cyclist roads?', () => {}), /interrupted/)
+  })
+  // A question already answered in this tab is re-shown without a request.
+  await withFetch(() => { throw new Error('must not refetch') }, async () => {
+    assert.equal((await ask('County roads?')).id, 'confirmed')
   })
 
   for (const call of [() => getDashboardOverview(), () => ask('How many crashes?')]) {

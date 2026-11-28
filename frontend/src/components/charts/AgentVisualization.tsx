@@ -32,7 +32,7 @@ function dataLabel(data: Record<string, unknown>, camel: string, snake: string, 
 function AgentBarChart({ data, label }: { data: TimeSeriesPoint[]; label: string }) {
   return (
     <ResponsiveContainer width="100%" height={280}>
-      <BarChart data={data} margin={{ top: 8, right: 12, left: -12, bottom: 24 }}>
+      <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 24 }}>
         <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
         <XAxis
           dataKey="label"

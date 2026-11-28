@@ -11,7 +11,7 @@ export function SeverityBarChart({ data, description, height = 280 }: SeverityBa
   return (
     <div role="img" aria-label={description}>
       <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={data} margin={{ top: 8, right: 12, left: -12, bottom: 24 }}>
+        <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 24 }}>
           <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="label"

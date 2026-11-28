@@ -20,7 +20,7 @@ export function CrashTrendChart({ data, seriesLabel = 'Crashes', description, he
   return (
     <div role="img" aria-label={description}>
       <ResponsiveContainer width="100%" height={height}>
-        <LineChart data={data} margin={{ top: 8, right: 16, left: -12, bottom: 0 }}>
+        <LineChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
           <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="label"

@@ -54,10 +54,25 @@ async function readAnswer(res: Response, onProgress: (preview: AnswerPreview) =>
   }
 }
 
+// Answers already shown in this tab, so Back and Forward re-show one instead of
+// asking again - a repeat request still counts against the API's per-minute limit.
+// ponytail: unbounded per tab; a visit asks a handful of questions.
+const answered = new Map<string, QueryResponse>()
+
 export async function ask(
   question: string, onProgress?: (preview: AnswerPreview) => void, signal?: AbortSignal,
 ): Promise<QueryResponse> {
   if (DEMO_MODE) return { ...mockQueryResponse, question }
+  const seen = answered.get(question)
+  if (seen) return seen
+  const result = await fetchAnswer(question, onProgress, signal)
+  answered.set(question, result)
+  return result
+}
+
+async function fetchAnswer(
+  question: string, onProgress?: (preview: AnswerPreview) => void, signal?: AbortSignal,
+): Promise<QueryResponse> {
   try {
     const res = await backendFetch('/api/query', {
       method: 'POST',

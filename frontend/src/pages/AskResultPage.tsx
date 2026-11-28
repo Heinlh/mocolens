@@ -91,7 +91,7 @@ function AskResult({ question }: { question: string }) {
   const currentError = error?.question === question ? error.message : null
 
   function handleFollowUp(prompt: string) {
-    navigate(buildAskResultPath(prompt), { replace: true })
+    navigate(buildAskResultPath(prompt))
   }
 
   function handleSave(result: QueryResponse) {

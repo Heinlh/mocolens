@@ -29,9 +29,9 @@ one was picked. hotspots always returns every area (respecting the other
 display, same as it always has.
 
 The two hotspot groupings are deliberately different, and not interchangeable:
-the summary's `_hotspots` groups by reporting agency because that is what its
-Area filter selects on, while the map's `_cell_hotspots` groups by geographic
-cell because an agency covers most of the county and its centroid is not a
+the summary's `_hotspots` groups by community (Census place) because that is
+what its Area filter selects on, while the map's `_cell_hotspots` groups by
+geographic cell because a community is too large for its centroid to be a
 place where crashes concentrate.
 """
 import calendar
@@ -154,7 +154,7 @@ def _crash_filter_clauses(filters: Filters, prefix: str = "") -> tuple[list[str]
     params: list = []
 
     if filters.area and filters.area != "All areas":
-        clauses.append(f"{p}agency_name = ?")
+        clauses.append(f"{p}community = ?")
         params.append(filters.area)
 
     if filters.road_user == "Pedestrians":
@@ -313,25 +313,26 @@ def _road_user_breakdown(con, window: Window, filters: Filters) -> list[schemas.
 
 
 def _hotspots(con, window: Window, filters: Filters) -> list[schemas.Hotspot]:
-    """Grouped by agency_name - the closest real proxy for "area" the data
-    has (no municipality/community field exists; see PROJECT_STATUS.txt).
+    """Grouped by community, the Census place each crash falls inside - the
+    same field the agent uses for named places. Crashes outside every named
+    place (community IS NULL) are left out of this breakdown only.
     """
     base_clauses, base_params = _crash_filter_clauses(filters)
 
     cur_clauses, cur_params = _window_clauses(window)
-    cur_where = " AND ".join(base_clauses + cur_clauses + ["agency_name IS NOT NULL"])
+    cur_where = " AND ".join(base_clauses + cur_clauses + ["community IS NOT NULL"])
     current_rows = con.execute(f"""
-        SELECT agency_name, COUNT(*), AVG(latitude), AVG(longitude)
+        SELECT community, COUNT(*), AVG(latitude), AVG(longitude)
         FROM fact_crashes WHERE {cur_where}
-        GROUP BY agency_name
+        GROUP BY community
     """, base_params + cur_params).fetchall()
 
     prior_counts: dict[str, int] = {}
     if window.prior_start is not None:
         prior_clauses, prior_params = _window_clauses(window, start=window.prior_start, end=window.prior_end)
-        prior_where = " AND ".join(base_clauses + prior_clauses + ["agency_name IS NOT NULL"])
+        prior_where = " AND ".join(base_clauses + prior_clauses + ["community IS NOT NULL"])
         prior_rows = con.execute(f"""
-            SELECT agency_name, COUNT(*) FROM fact_crashes WHERE {prior_where} GROUP BY agency_name
+            SELECT community, COUNT(*) FROM fact_crashes WHERE {prior_where} GROUP BY community
         """, base_params + prior_params).fetchall()
         prior_counts = dict(prior_rows)
 
@@ -340,14 +341,14 @@ def _hotspots(con, window: Window, filters: Filters) -> list[schemas.Hotspot]:
     max_count = max(r[1] for r in current_rows)
 
     hotspots = []
-    for agency, count, lat, lon in current_rows:
+    for community, count, lat, lon in current_rows:
         if lat is None or lon is None:
             continue
-        prior = prior_counts.get(agency)
+        prior = prior_counts.get(community)
         trend = round(percent_change(prior, count), 1) if prior else 0.0
         hotspots.append(schemas.Hotspot(
-            id=agency.lower().replace(" ", "-"),
-            area=agency,
+            id=community.lower().replace(" ", "-"),
+            area=community,
             latitude=lat,
             longitude=lon,
             crash_count=count,
@@ -432,10 +433,9 @@ def get_dashboard_trends(filters: Filters | None = None) -> schemas.TrendsRespon
         con.close()
 
 
-# The map groups crashes into geographic cells, not into the reporting
-# agencies the summary endpoint's Area filter uses. An agency covers most of
-# the county, so agency centroids would draw one blob over Montgomery County
-# and call it a hotspot. 0.01 degrees is roughly 1.1 km north-south and 0.9 km
+# The map groups crashes into geographic cells, not into the communities the
+# summary endpoint's Area filter uses. A community spans several square miles,
+# so its centroid is not a place crashes concentrate. 0.01 degrees is roughly 1.1 km north-south and 0.9 km
 # east-west at this latitude - about a neighbourhood, which is the scale a
 # resident asking "where are crashes concentrated?" means.
 HOTSPOT_GRID_DEGREES = 0.01

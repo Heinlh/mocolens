@@ -83,7 +83,11 @@ export function DashboardPage() {
   // dashboard_service.py's docstring) - narrowed here client-side for the
   // map, same as before; this is also what keeps the Area dropdown's own
   // option list stable no matter which area is currently selected.
-  const areaOptions = useMemo(() => ['All areas', ...(data?.hotspots.map((h) => h.area) ?? [])], [data])
+  const areaOptions = useMemo(() => {
+    const areas = new Set(data?.hotspots.map((h) => h.area) ?? [])
+    if (filters.area !== 'All areas') areas.add(filters.area) // stays selectable even if other filters leave it with no crashes
+    return ['All areas', ...[...areas].sort()]
+  }, [data, filters.area])
   const visibleHotspots = useMemo(() => {
     if (!data) return []
     if (filters.area === 'All areas') return data.hotspots

@@ -7,12 +7,12 @@ curated database, so every expected number below is hand-computed, not
 just "whatever the real data happens to say today."
 
 Fixture, anchored on latest = 2026-08-20 (C1's date):
-  C1  2026-08-20  Rockville Police             property_damage  (no ped/cyclist)
-  C2  2026-02-10  Montgomery County Police     injury           pedestrian_involved
-  C3  2025-09-15  Gaithersburg Police          fatal            cyclist_involved
-  C4  2024-12-01  Rockville Police             property_damage  (falls in the PRIOR
-                                                                  12-month window, not current)
-  C5  2020-01-01  Takoma Park Police           injury           pedestrian_involved
+  C1  2026-08-20  Rockville        property_damage  (no ped/cyclist)
+  C2  2026-02-10  Silver Spring    injury           pedestrian_involved
+  C3  2025-09-15  Gaithersburg     fatal            cyclist_involved
+  C4  2024-12-01  Rockville        property_damage  (falls in the PRIOR
+                                                      12-month window, not current)
+  C5  2020-01-01  Takoma Park      injury           pedestrian_involved
 
 Participants: P1 driver/no_apparent_injury on C1, P2 pedestrian/possible_injury
 on C2, P3 cyclist/fatal_injury on C3, P4 driver/suspected_serious_injury on C4
@@ -32,12 +32,12 @@ def con(monkeypatch):
     c = duckdb.connect(":memory:")
     c.execute("""
         CREATE TABLE fact_crashes AS SELECT * FROM (VALUES
-            ('C1', DATE '2026-08-20', 39.0, -77.0, 'Rockville Police', 'property_damage', false, false),
-            ('C2', DATE '2026-02-10', 39.0, -77.0, 'Montgomery County Police', 'injury', true, false),
-            ('C3', DATE '2025-09-15', 39.0, -77.0, 'Gaithersburg Police', 'fatal', false, true),
-            ('C4', DATE '2024-12-01', 39.0, -77.0, 'Rockville Police', 'property_damage', false, false),
-            ('C5', DATE '2020-01-01', 39.0, -77.0, 'Takoma Park Police', 'injury', true, false)
-        ) AS t(crash_id, crash_date, latitude, longitude, agency_name, severity,
+            ('C1', DATE '2026-08-20', 39.0, -77.0, 'Rockville', 'property_damage', false, false),
+            ('C2', DATE '2026-02-10', 39.0, -77.0, 'Silver Spring', 'injury', true, false),
+            ('C3', DATE '2025-09-15', 39.0, -77.0, 'Gaithersburg', 'fatal', false, true),
+            ('C4', DATE '2024-12-01', 39.0, -77.0, 'Rockville', 'property_damage', false, false),
+            ('C5', DATE '2020-01-01', 39.0, -77.0, 'Takoma Park', 'injury', true, false)
+        ) AS t(crash_id, crash_date, latitude, longitude, community, severity,
                pedestrian_involved, cyclist_involved)
     """)
     c.execute("""
@@ -102,8 +102,8 @@ def test_default_window_crash_trend_groups_by_month(con):
 
 # --- area / road_user / severity filters, real SQL not client-side ---
 
-def test_area_filter_restricts_to_one_agency(con):
-    m = _total(con, svc.Filters(area="Rockville Police"))
+def test_area_filter_restricts_to_one_community(con):
+    m = _total(con, svc.Filters(area="Rockville"))
     # only C1 is Rockville AND inside the current 12mo window (C4 is Rockville
     # too, but it's in the prior period, not counted in "current")
     assert m.value == 1
@@ -116,9 +116,9 @@ def test_area_filter_does_not_narrow_hotspots(con):
     # pre-narrowed to the selected area, every other option would vanish
     # from the dropdown the instant one was picked. Area still genuinely
     # filters everything else (KPIs, charts) - just not this one.
-    r = svc.get_dashboard_summary(svc.Filters(area="Rockville Police"))
+    r = svc.get_dashboard_summary(svc.Filters(area="Rockville"))
     areas = {h.area for h in r.hotspots}
-    assert areas == {"Rockville Police", "Montgomery County Police", "Gaithersburg Police"}
+    assert areas == {"Rockville", "Silver Spring", "Gaithersburg"}
     assert r.metrics[0].value == 1  # but the KPI *is* narrowed to Rockville (just C1)
 
 
@@ -151,12 +151,12 @@ def test_severity_serious_injury_matches_via_participant_signal_not_crash_severi
 def test_filters_compose_with_and(con):
     # Rockville + property_damage matches C1 and C4; windowed to "All time"
     # so both are visible regardless of the current/prior split.
-    m = _total(con, svc.Filters(area="Rockville Police", severity="Property damage only", time_range="All time"))
+    m = _total(con, svc.Filters(area="Rockville", severity="Property damage only", time_range="All time"))
     assert m.value == 2
 
 
 def test_no_matching_rows_degrades_metrics_to_zero_not_a_crash(con):
-    r = svc.get_dashboard_summary(svc.Filters(area="Rockville Police", severity="Fatal"))
+    r = svc.get_dashboard_summary(svc.Filters(area="Rockville", severity="Fatal"))
     assert r.metrics[0].value == 0
     assert r.severity_breakdown == []
 
@@ -171,7 +171,7 @@ def test_no_matching_rows_degrades_hotspots_to_empty_not_a_crash(con):
 # --- road_user_breakdown / severity_breakdown reflect the same filters ---
 
 def test_road_user_breakdown_reflects_area_filter(con):
-    r = svc.get_dashboard_summary(svc.Filters(area="Gaithersburg Police"))
+    r = svc.get_dashboard_summary(svc.Filters(area="Gaithersburg"))
     labels = {c.label for c in r.road_user_breakdown}
     assert labels == {"Cyclists"}  # only C3's participant (P3, cyclist) is in Gaithersburg
 
@@ -205,5 +205,5 @@ def test_tied_counts_come_back_in_a_stable_order(con):
     assert [c.label for c in summary.severity_breakdown] == ["Fatal", "Injury", "Property damage"]
     assert [c.label for c in summary.road_user_breakdown] == ["Cyclists", "Drivers", "Pedestrians"]
     assert [h.area for h in summary.hotspots] == [
-        "Gaithersburg Police", "Montgomery County Police", "Rockville Police",
+        "Gaithersburg", "Rockville", "Silver Spring",
     ]

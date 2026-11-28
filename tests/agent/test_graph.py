@@ -218,6 +218,26 @@ def test_finalize_call_carries_the_system_prompt():
 
     graph_module.ask("write me a poem", llm=FakeLLM())
     messages = seen["messages"]
-    assert isinstance(messages[0], SystemMessage) and messages[0].content == SYSTEM_PROMPT
+    assert isinstance(messages[0], SystemMessage) and messages[0].content == graph_module.system_prompt()
+    assert messages[0].content.startswith(SYSTEM_PROMPT)
     assert sum(isinstance(m, SystemMessage) for m in messages) == 1
     assert messages[-1].content == FINALIZE_INSTRUCTIONS
+
+
+def test_system_prompt_states_the_data_dates():
+    """The model cannot know which year is complete, or the date of the latest
+    crash, unless it is told - and in production no tool can tell it."""
+    info = {"coverage_start": "2015-01-01", "coverage_end": "2026-11-17", "snapshot_date": "2026-11-23"}
+    prompt = graph_module.system_prompt(info)
+    assert "through 2026-11-17" in prompt
+    assert "latest complete year is 2025" in prompt
+    assert "2026 is partial" in prompt
+    assert "downloaded from the county on 2026-11-23" in prompt
+    year_end = graph_module.system_prompt({"coverage_end": "2026-12-31"})
+    assert "latest complete year is 2026" in year_end
+    assert "partial" not in year_end.split("# The data right now")[1]
+
+
+def test_system_prompt_without_build_info_is_the_base_prompt():
+    from mocolens.agent.prompts import SYSTEM_PROMPT
+    assert graph_module.system_prompt({}) == SYSTEM_PROMPT

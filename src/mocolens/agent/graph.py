@@ -77,6 +77,33 @@ def validate_citations(answer: AgentAnswer, messages: list[BaseMessage]) -> Agen
     return answer.model_copy(update={"citations": kept})
 
 
+def system_prompt(info: dict | None = None) -> str:
+    """SYSTEM_PROMPT plus the dates the shipped crash data actually covers.
+
+    Without them the model guesses which year is "last year" or the latest
+    complete one, and in production it cannot look them up: the raw lake that
+    get_source_metadata reads is not in the container image, so its
+    last_updated is None there. build_info.json ships with the tables.
+    """
+    if info is None:
+        from ..processing import curate
+        info = curate.build_info("vision_zero") or {}
+    end = info.get("coverage_end")
+    if not end:
+        return SYSTEM_PROMPT
+    year = int(end[:4])
+    latest_complete = year if end[5:] == "12-31" else year - 1
+    downloaded = f", downloaded from the county on {info['snapshot_date']}" if info.get("snapshot_date") else ""
+    partial = f" {year} is partial." if year != latest_complete else ""
+    return SYSTEM_PROMPT + f"""
+
+# The data right now
+The crash data runs from {info.get('coverage_start') or '2015-01-01'} through {end}{downloaded}.
+When you say how current the data is, give {end}, the date of the latest crash - not the
+download date. The latest complete year is {latest_complete}: use it for "last year", for "the
+most recent year", and for any single-year number when no year is asked for.{partial}"""
+
+
 def build_graph(llm=None, emit=None):
     """Builds and compiles the graph. `llm` is injectable (any object with
     .bind_tools() and .with_structured_output(), matching LangChain's chat
@@ -88,6 +115,7 @@ def build_graph(llm=None, emit=None):
         llm = get_llm()
 
     llm_with_tools = llm.bind_tools(ALL_TOOLS)
+    prompt = system_prompt()
     if emit is None:
         llm_structured = llm.with_structured_output(AgentAnswer)
     else:
@@ -96,7 +124,7 @@ def build_graph(llm=None, emit=None):
     def agent_node(state: AgentState) -> dict:
         messages = state["messages"]
         if not messages or not isinstance(messages[0], SystemMessage):
-            messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
+            messages = [SystemMessage(content=prompt)] + list(messages)
         started = perf_counter()
         response = llm_with_tools.invoke(messages)
         elapsed = round((perf_counter() - started) * 1000)
@@ -124,7 +152,7 @@ def build_graph(llm=None, emit=None):
         # call), so it is added here too: its scope, privacy and integrity
         # rules have to bind the call that writes the user-facing answer.
         messages = (
-            [SystemMessage(content=SYSTEM_PROMPT)]
+            [SystemMessage(content=prompt)]
             + [m for m in state["messages"] if not isinstance(m, SystemMessage)]
             + [HumanMessage(content=FINALIZE_INSTRUCTIONS)]
         )

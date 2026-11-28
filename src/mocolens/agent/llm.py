@@ -20,6 +20,7 @@ below, so a deployment can be swapped (or rolled back to the old one)
 without a code change.
 """
 import os
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
@@ -63,6 +64,12 @@ def get_llm(reasoning_effort: str = "low", max_tokens: int = 4000) -> AzureChatO
             "Use the project's Azure OpenAI endpoint instead, "
             "https://<resource-name>.openai.azure.com/, from the same Overview page."
         )
+    # Foundry displays the endpoint as .../openai/v1 (and a deployment's Target
+    # URI as .../openai/deployments/...), but AzureChatOpenAI appends
+    # /openai/deployments/<name>/... itself - any path left on the endpoint
+    # doubles up and every request 404s. Keep only the resource root.
+    parts = urlsplit(endpoint)
+    endpoint = f"{parts.scheme}://{parts.netloc}/"
 
     deployment = _env("AZURE_OPENAI_DEPLOYMENT") or DEPLOYMENT
     # A rollback to gpt-4.1-mini must not send reasoning_effort, which

@@ -79,6 +79,18 @@ def test_deployment_and_api_version_can_be_overridden_for_a_rollback(monkeypatch
     assert "reasoning_effort" not in captured
 
 
+@pytest.mark.parametrize("pasted", [
+    "https://example.openai.azure.com/openai/v1",
+    "https://example.openai.azure.com/openai/v1/",
+    "https://example.openai.azure.com/openai/deployments/gpt-5.4-mini/chat/completions?api-version=2025-04-01-preview",
+    "https://example.openai.azure.com",
+])
+def test_endpoint_path_is_trimmed_to_the_resource_root(monkeypatch, pasted):
+    """AzureChatOpenAI appends /openai/deployments/... itself; a pasted path would 404."""
+    captured = _captured_kwargs(monkeypatch, AZURE_OPENAI_ENDPOINT=pasted)
+    assert captured["azure_endpoint"] == "https://example.openai.azure.com/"
+
+
 def test_foundry_project_endpoint_is_rejected_with_a_clear_message(monkeypatch):
     """The project endpoint cannot serve Chat Completions; fail early and say why."""
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "fake-key")

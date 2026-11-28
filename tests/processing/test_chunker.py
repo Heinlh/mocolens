@@ -14,3 +14,11 @@ def test_guess_year_plain_year():
 
 def test_guess_year_none_found():
     assert guess_year("blue_ribbon_panel_final_report.pdf") is None
+    assert guess_year("report.pdf", "https://example.org/visionzero/report.pdf") is None
+
+
+def test_guess_year_falls_back_to_the_upload_folder():
+    url = "https://assets.montgomerycountymd.gov/files/2026-04/MoCo_VZ_Assessment_Final_Report_PUBLIC.pdf"
+    assert guess_year("MoCo_VZ_Assessment_Final_Report_PUBLIC.pdf", url) == 2026
+    # the filename still wins when it has a year
+    assert guess_year("FY25_Vision_Zero_Annual_Report.pdf", "https://x.gov/files/2026-04/FY25.pdf") == 2025

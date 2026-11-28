@@ -15,20 +15,32 @@ MAX_TOKENS = 800  # top of the doc's 500-900 token target (§9)
 _tokenizer = HuggingFaceTokenizer.from_pretrained(model_name=EMBEDDING_MODEL, max_tokens=MAX_TOKENS)
 _chunker = HybridChunker(tokenizer=_tokenizer, merge_peers=True)
 
-# ponytail: filename regex heuristic for publication year, not PDF content
-# inspection. Upgrade to reading the report's title page if this starts
-# missing real reports.
+# ponytail: filename/URL regex heuristic for publication year, not PDF content
+# inspection. The upload-folder fallback dates a report by when the county
+# posted it, which can trail the cover date. Upgrade to reading the report's
+# title page if that gap starts mattering.
 _FY_RE = re.compile(r"FY(\d{2})(?!\d)", re.IGNORECASE)
 _YEAR_RE = re.compile(r"(20\d{2})")
+# The county site files uploads under /files/<year>-<month>/.
+_UPLOAD_RE = re.compile(r"/files/(20\d{2})-\d{2}/")
 
 
-def guess_year(filename: str) -> int | None:
-    """Best-effort publication year from a filename (e.g. FY25_..._Report.pdf)."""
+def guess_year(filename: str, source_url: str | None = None) -> int | None:
+    """Best-effort publication year from a filename (e.g. FY25_..._Report.pdf),
+    else from the county site's upload folder in its URL.
+
+    An undated report is dropped by every year_at_least search, so a report
+    with no year in its filename (MoCo_VZ_Assessment_Final_Report_PUBLIC.pdf)
+    was unreachable whenever the agent filtered by year.
+    """
     fy_match = _FY_RE.search(filename)
     if fy_match:
         return 2000 + int(fy_match.group(1))
     year_match = _YEAR_RE.search(filename)
-    return int(year_match.group(1)) if year_match else None
+    if year_match:
+        return int(year_match.group(1))
+    upload_match = _UPLOAD_RE.search(source_url or "")
+    return int(upload_match.group(1)) if upload_match else None
 
 
 def chunk_document(doc, *, document_id: str, title: str, domain: str,

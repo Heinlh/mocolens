@@ -81,7 +81,7 @@ def _process_single_document(domain: str, doc_id: str, record: dict) -> None:
         title=_guess_title(local_path.name),
         domain=domain,
         source_url=record["source_url"],
-        year=chunker.guess_year(local_path.name),
+        year=chunker.guess_year(local_path.name, record["source_url"]),
     )
 
     (chunks_dir / f"{doc_id}.jsonl").write_text(
